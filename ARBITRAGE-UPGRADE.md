@@ -410,3 +410,46 @@ resolves owner/keeper/event/analytics data correctly through the proxy.
 `NEXT_PUBLIC_RPC_URL` still exists as an opt-in escape hatch (talk to an RPC directly from the
 browser, bypassing the proxy) for deployments with no Node server to run the route handler (e.g. a
 static export) - only appropriate for an endpoint with no secret embedded in its URL.
+
+## 17. Unstyled production build - `output: "standalone"` nesting under a monorepo root
+
+A user deploying to a real Ubuntu VPS (not Docker) reported: build succeeds, standalone server
+starts, but the page renders as raw unstyled HTML - CSS and JS chunks not loading. Their own working
+run command turned out to be `node .next/standalone/frontend/server.js` - note the extra `frontend/`
+segment, which is the actual root cause.
+
+This repo's own root directory (`/opt/flash-loan-arbitrage-bot/` on their VPS, one level above
+`frontend/`) has its own `package.json` (from the unrelated Foundry/keeper tooling). Next.js's
+`output: "standalone"` file-tracing walks **up** the filesystem from the app directory looking for
+the nearest lockfile to infer a monorepo "workspace root." On this VPS, a lockfile also existed at
+that root level (most likely from an earlier `npm install` run there for one of the other services
+sharing the box - `pm2 list` on their screenshot shows several unrelated apps: `arbitragesmart`,
+`dravon`, etc.). Once Next.js infers that outer directory as the root, it nests the *entire*
+standalone output to mirror `frontend/`'s position relative to it: `server.js` lands at
+`.next/standalone/frontend/server.js`, and critically `.next/standalone/frontend/.next/static`
+instead of the "normal" `.next/standalone/.next/static`. Copying static assets to the normal
+(non-nested) path - which is what every piece of Next.js's own standalone-deployment documentation
+describes - means every `/_next/static/*` request 404s once the server actually runs, and the page
+renders with zero CSS/JS, silently, no error anywhere. This is why it also mysteriously never
+happened in this project's own Docker build: the Dockerfile's build `context: ./frontend` means
+Docker never sees anything above `frontend/` in the first place, so the ambiguity never arises there
+- only a direct `npm run build` from within a full clone of the whole monorepo hits it, and only on
+machines where a lockfile happens to exist at the repo root (which is filesystem-state-dependent,
+not something `next build`'s own output announces).
+
+**Reproduced empirically** before trusting the diagnosis: created a throwaway `package-lock.json` at
+the repo root, rebuilt, and confirmed `server.js` did in fact land at
+`.next/standalone/frontend/server.js` - exactly matching the user's report. Removed it, rebuilt with
+the fix below, recreated the root lockfile again, and confirmed the output stayed flat regardless.
+
+**Fix**: `next.config.ts` now sets `outputFileTracingRoot: path.join(__dirname)`, pinning the
+tracing root to `frontend/` itself so Next.js never walks up looking for a workspace root, making
+the standalone output layout deterministic - always `.next/standalone/server.js` and
+`.next/standalone/.next/static` - on any machine, regardless of what else lives above this directory.
+
+**Verified end-to-end**: full clean build, copied `.next/static` → `.next/standalone/.next/static`
+and `public` → `.next/standalone/public` (the standalone output never auto-copies these - a separate,
+well-known Next.js requirement, unrelated to the bug above but necessary either way), ran
+`PORT=3002 node .next/standalone/server.js` (the user's exact command), and confirmed via Playwright
+(network-request tracing + full-page screenshot) that every `/_next/static/*` asset returns 200 and
+the page renders with full styling, fonts, and layout.
