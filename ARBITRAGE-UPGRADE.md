@@ -262,3 +262,63 @@ free/shared public RPC this can be slow or hit rate limits. For continuous (`TRI
 operation at this scale, use an RPC provider that can actually sustain the call volume (a paid tier,
 or your own node) — or trim `intermediateTokens` down to a smaller, higher-conviction subset for
 tighter poll loops. This is a real operational trade-off, not something the code can wish away.
+
+---
+
+# Round 3: architecture split, security hardening, observability, illiquidity filter
+
+## 11. Contract: Ownable2Step + DRY
+
+- Swapped `Ownable` for OpenZeppelin's `Ownable2Step`: ownership transfer now requires the new
+  owner to actively call `acceptOwnership()` before anything changes. A typo'd or unreachable
+  address passed to `transferOwnership()` can no longer permanently brick the contract's owner —
+  the old owner stays in control until the new one confirms. Covered by
+  `test_Ownable2Step_RequiresAcceptanceToCompleteTransfer`.
+- Extracted `_minOutFromQuote()` (the zero-check + slippage-tolerance math repeated identically in
+  all four `_swapX` functions) and `_resetApproval()` (the trailing `forceApprove(spender, 0)` also
+  repeated four times) into shared internal helpers. No behavior change — same checks, same calls,
+  just not copy-pasted four times.
+
+## 12. Illiquid-pool filter (`routes.ts`)
+
+Added a price-impact check for V2-style hops: each candidate is also quoted at 1% of the real trade
+size, and rejected if the full-size trade's effective rate is worse than the small-size rate by more
+than `maxPriceImpactBps` (configurable in `routes.config.json`, default 500 = 5%). A deep pool prices
+both sizes almost identically; a thin pool shows heavy degradation at the full size. This needs no
+factory/pair address discovery — one extra `getAmountsOut` call per V2 hop — and is the concrete
+answer to "evaluate many liquid token pairs and ignore illiquid pools." Disabled by default
+(`maxPriceImpactBps: 0`) to skip the extra RPC call for anyone who doesn't need it.
+
+## 13. Scanner / keeper architecture split
+
+The single `index.ts` from rounds 1-2 is now three modules with one job each (see `ARCHITECTURE.md`
+for the full picture):
+
+- **`scanner.ts`** — generates candidates, costs them (premium + fees + gas + slippage buffer),
+  logs every accept/reject decision with its full breakdown, and returns **all** evaluated
+  candidates **ranked by net profit descending** (`Opportunity[]`) — "a ranked list of
+  opportunities," not just a pass/fail per candidate.
+- **`keeper.ts`** — owns the trigger loop (poll or per-block) and static-vs-dynamic dispatch, takes
+  the scanner's ranked list, and submits only the single best `executable` opportunity (the
+  contract's own same-block replay guard means only one execution can land per block anyway, so
+  submitting more than the top one has no benefit).
+- **`metrics.ts`** — a dependency-free counter (evaluated / accepted / rejected-by-reason-category /
+  cumulative accepted net profit per asset), logged as a one-line summary every scan cycle.
+- **`index.ts`** — now just wires up the provider/wallet/contract, checks the configured key is
+  actually authorized on-chain, and hands off to `keeper.ts`. Down from owning the whole loop to
+  ~35 lines.
+
+## 14. A real bug the refactor's smoke test caught
+
+Every module change above was verified twice: `tsc --noEmit` (types) and an actual run against a
+live local Anvil chain with a real deployed contract (not just a mental read-through). The live run
+caught a genuine bug that pure type-checking couldn't: the placeholder address used everywhere for
+an "unused quoter" field (`0x000...dEaD`, the common burn-address spelling) fails ethers.js's EIP-55
+checksum validation. Ethers responds to a checksum-invalid hex string by treating it as a possible
+ENS name and trying to resolve it — which throws `network does not support ENS` on any chain without
+ENS support, including plain local Anvil chains **and real BSC mainnet itself**. This would have
+silently broken every quote call in production. Fixed by switching the placeholder to the properly
+zero-padded `address(0)` (which is checksum-invariant and also matches the convention the Solidity
+contract's own tests already use for "unused" fields) in `routes.ts` and `strategies.example.json`.
+This is exactly the kind of bug that only surfaces by actually executing the code path, not by
+reading it — worth internalizing as a reason the local-Anvil smoke test loop exists at all.

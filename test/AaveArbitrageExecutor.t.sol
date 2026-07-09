@@ -348,4 +348,35 @@ contract AaveArbitrageExecutorTest is Test {
 
         assertGt(usdt.balanceOf(profitRecipient), profitBefore, "no profit from Wombat-style route");
     }
+
+    /// @notice Ownable2Step: ownership does NOT change on transferOwnership()
+    ///         alone - a typo'd/unreachable address can never permanently
+    ///         brick ownership the way single-step Ownable would. The
+    ///         pending owner must actively accept before anything changes,
+    ///         and only that pending owner can do so.
+    function test_Ownable2Step_RequiresAcceptanceToCompleteTransfer() public {
+        address newOwner = makeAddr("newOwner");
+
+        vm.prank(owner);
+        executor.transferOwnership(newOwner);
+
+        // Old owner is still owner - the transfer is only pending.
+        assertEq(executor.owner(), owner);
+        assertEq(executor.pendingOwner(), newOwner);
+
+        // A random address (not the pending owner) cannot complete it.
+        vm.prank(stranger);
+        vm.expectRevert();
+        executor.acceptOwnership();
+
+        // The pending owner completes it.
+        vm.prank(newOwner);
+        executor.acceptOwnership();
+        assertEq(executor.owner(), newOwner);
+
+        // Old owner has genuinely lost access to owner-only functions now.
+        vm.prank(owner);
+        vm.expectRevert();
+        executor.setKeeper(address(0x1));
+    }
 }

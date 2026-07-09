@@ -44,14 +44,73 @@ const V3_QUOTER_ABI = [
 const WOMBAT_POOL_ABI = [
   "function quotePotentialSwap(address fromToken, address toToken, int256 fromAmount) view returns (uint256 potentialOutcome, uint256 haircut)",
 ];
-const ZERO_QUOTER = "0x0000000000000000000000000000000000dEaD";
+// address(0), matching the Solidity contract's own "unused" convention for
+// the quoter field on non-V3 hops. Deliberately NOT the common
+// "0x000...dEaD" burn-address placeholder used elsewhere in this repo for
+// human-readable JSON configs - that string fails ethers.js's EIP-55
+// checksum validation, which makes ethers silently treat it as a possible
+// ENS name and try to resolve it, crashing with "network does not support
+// ENS" on any chain without ENS (including real BSC and any local devnet).
+// Found via an actual local-anvil smoke test of this exact code path.
+const ZERO_QUOTER = "0x0000000000000000000000000000000000000000";
 
-async function quoteV2(provider: JsonRpcProvider, r: RouterInfo, tokenIn: TokenInfo, tokenOut: TokenInfo, amountIn: bigint): Promise<HopCandidate | null> {
+/**
+ * Illiquid-pool filter (requirement: "evaluate many liquid token pairs and
+ * ignore illiquid pools"): samples the same V2-style pool at a tiny reference
+ * size (1% of the real trade) and compares its effective rate to the rate at
+ * full trade size. A deep pool prices both sizes almost identically; a thin
+ * pool shows heavy price impact at the full size relative to the tiny probe.
+ * This needs no pair/factory discovery (no extra address lookups) and works
+ * uniformly across any V2-style router - the trade-off is one extra
+ * getAmountsOut call per candidate hop. maxPriceImpactBps<=0 disables the
+ * check entirely (saves the extra call) for callers that don't need it.
+ */
+async function passesLiquidityFilter(
+  c: Contract,
+  path: string[],
+  amountIn: bigint,
+  quotedOut: bigint,
+  maxPriceImpactBps: number
+): Promise<boolean> {
+  if (maxPriceImpactBps <= 0 || amountIn < 100n) return true;
+  try {
+    const referenceIn = amountIn / 100n;
+    if (referenceIn === 0n) return true;
+    const referenceAmounts: bigint[] = await c.getAmountsOut(referenceIn, path);
+    const referenceOut = referenceAmounts[referenceAmounts.length - 1];
+    if (referenceOut === 0n) return true; // can't establish a baseline - don't block on it
+
+    // Effective rate at each size, both scaled to "output per unit of referenceIn" for a fair comparison.
+    const rateAtReference = (referenceOut * 10_000n) / referenceIn;
+    const rateAtFullSize = (quotedOut * 10_000n) / amountIn;
+    if (rateAtReference === 0n) return true;
+
+    const impactBps = rateAtReference > rateAtFullSize ? ((rateAtReference - rateAtFullSize) * 10_000n) / rateAtReference : 0n;
+    return impactBps <= BigInt(maxPriceImpactBps);
+  } catch {
+    return true; // reference probe failed - don't block the candidate on a filter that itself errored
+  }
+}
+
+async function quoteV2(
+  provider: JsonRpcProvider,
+  r: RouterInfo,
+  tokenIn: TokenInfo,
+  tokenOut: TokenInfo,
+  amountIn: bigint,
+  maxPriceImpactBps: number
+): Promise<HopCandidate | null> {
   try {
     const c = new Contract(r.address, V2_ROUTER_ABI, provider);
-    const amounts: bigint[] = await c.getAmountsOut(amountIn, [tokenIn.address, tokenOut.address]);
+    const path = [tokenIn.address, tokenOut.address];
+    const amounts: bigint[] = await c.getAmountsOut(amountIn, path);
     const out = amounts[amounts.length - 1];
     if (out === 0n) return null;
+
+    if (!(await passesLiquidityFilter(c, path, amountIn, out, maxPriceImpactBps))) {
+      return null; // rejected: illiquid relative to trade size, not "no pool"
+    }
+
     return {
       router: r.address,
       quoter: ZERO_QUOTER,
@@ -153,14 +212,15 @@ export async function findBestHop(
   tokenIn: TokenInfo,
   tokenOut: TokenInfo,
   amountIn: bigint,
-  cache: Map<string, HopCandidate | null>
+  cache: Map<string, HopCandidate | null>,
+  maxPriceImpactBps: number = 0
 ): Promise<HopCandidate | null> {
   const cacheKey = `${tokenIn.address.toLowerCase()}|${tokenOut.address.toLowerCase()}|${amountIn.toString()}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey)!;
 
   const results = await Promise.all(
     routers.map((r) => {
-      if (r.routerType === 0) return quoteV2(provider, r, tokenIn, tokenOut, amountIn);
+      if (r.routerType === 0) return quoteV2(provider, r, tokenIn, tokenOut, amountIn, maxPriceImpactBps);
       if (r.routerType === 1) return quoteV3(provider, r, tokenIn, tokenOut, amountIn);
       return quoteWombat(provider, r, tokenIn, tokenOut, amountIn);
     })
@@ -193,7 +253,8 @@ export async function generateCandidateRoutes(
   baseAssets: TokenInfo[],
   intermediateTokens: TokenInfo[],
   routers: RouterInfo[],
-  probeAmountByAssetAddress: Record<string, bigint>
+  probeAmountByAssetAddress: Record<string, bigint>,
+  maxPriceImpactBps: number = 0
 ): Promise<RouteCandidate[]> {
   const candidates: RouteCandidate[] = [];
   const cache = new Map<string, HopCandidate | null>();
@@ -204,11 +265,11 @@ export async function generateCandidateRoutes(
     const others = intermediateTokens.filter((t) => t.address.toLowerCase() !== base.address.toLowerCase());
 
     for (const x of others) {
-      const hop1 = await findBestHop(provider, routers, base, x, probe, cache);
+      const hop1 = await findBestHop(provider, routers, base, x, probe, cache, maxPriceImpactBps);
       if (!hop1) continue;
 
       // 2-hop: base -> x -> base
-      const hop2Back = await findBestHop(provider, routers, x, base, hop1.quotedOut, cache);
+      const hop2Back = await findBestHop(provider, routers, x, base, hop1.quotedOut, cache, maxPriceImpactBps);
       if (hop2Back) {
         candidates.push({
           name: `${base.symbol}->${x.symbol}->${base.symbol} (${hop1.routerName}/${hop2Back.routerName})`,
@@ -221,9 +282,9 @@ export async function generateCandidateRoutes(
       // 3-hop / triangular: base -> x -> y -> base
       for (const y of others) {
         if (y.address.toLowerCase() === x.address.toLowerCase()) continue;
-        const hop2 = await findBestHop(provider, routers, x, y, hop1.quotedOut, cache);
+        const hop2 = await findBestHop(provider, routers, x, y, hop1.quotedOut, cache, maxPriceImpactBps);
         if (!hop2) continue;
-        const hop3 = await findBestHop(provider, routers, y, base, hop2.quotedOut, cache);
+        const hop3 = await findBestHop(provider, routers, y, base, hop2.quotedOut, cache, maxPriceImpactBps);
         if (!hop3) continue;
 
         candidates.push({

@@ -15,7 +15,7 @@
       "hops": [
         {
           "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-          "quoter": "0x0000000000000000000000000000000000dEaD",
+          "quoter": "0x0000000000000000000000000000000000000000",
           "routerType": 0,
           "tokenIn": "0x55d398326f99059fF775485246999027B3197955",
           "tokenOut": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
@@ -25,7 +25,7 @@
         },
         {
           "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-          "quoter": "0x0000000000000000000000000000000000dEaD",
+          "quoter": "0x0000000000000000000000000000000000000000",
           "routerType": 0,
           "tokenIn": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
           "tokenOut": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
@@ -35,7 +35,7 @@
         },
         {
           "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-          "quoter": "0x0000000000000000000000000000000000dEaD",
+          "quoter": "0x0000000000000000000000000000000000000000",
           "routerType": 0,
           "tokenIn": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
           "tokenOut": "0x55d398326f99059fF775485246999027B3197955",

@@ -46,6 +46,11 @@ export interface RoutesConfigFile {
   /** Passed as executeArbitrage's on-chain slippageBPS (amountOutMin tolerance per hop). */
   executionSlippageBps: number;
   minProfitByAssetAddress: Record<string, string>;
+  /** Illiquid-pool filter (requirement: "ignore illiquid pools"): a V2-style
+   *  hop is rejected if trading the full probe amount shows more than this
+   *  much price impact versus a 1%-of-probe reference quote on the same
+   *  pool. 0 or omitted disables the check (saves one eth_call per hop). */
+  maxPriceImpactBps?: number;
 }
 
 export const config = {

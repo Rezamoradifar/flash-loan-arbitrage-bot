@@ -120,14 +120,18 @@ flash-arb/
 │   ├── Deploy.s.sol                  # deploy against a REAL Aave pool (mainnet/testnet)
 │   └── DeployLocalDemo.s.sol         # deploy + run one full arbitrage against local mocks
 ├── keeper/                           # off-chain TypeScript bot (ethers.js)
-│   ├── src/index.ts                  # poll or block-driven loop: scan → decide (logged) → execute
-│   ├── src/routes.ts                 # multi-DEX (V2/V3/Wombat), multi-hop route generator
+│   ├── src/index.ts                  # thin entry point: wires up provider/wallet, hands off to keeper.ts
+│   ├── src/scanner.ts                # scans + costs + RANKS candidates into Opportunity[] (the "scanner service")
+│   ├── src/keeper.ts                 # trigger loop (poll/block) + submits the best ranked opportunity
+│   ├── src/metrics.ts                # observability: evaluated/accepted/rejected-by-reason counters
+│   ├── src/routes.ts                 # multi-DEX (V2/V3/Wombat) quoting + illiquid-pool filter
 │   ├── routes.config.example.json    # dynamic-mode config: 6 base assets, 58 tokens, 6 DEXs
 │   ├── tokenlist.bsc.json            # 58 verified tokens, sourced from PancakeSwap's own repo
 │   ├── strategies.example.json       # static-mode fixed route (SCAN_MODE=static)
 │   ├── addresses.bsc.json            # verified BSC contract/token addresses + sources
 │   └── .env.example
-├── ARBITRAGE-UPGRADE.md              # why the spread was negative + every change explained
+├── ARCHITECTURE.md                   # system diagram, data flow, security model, extension points
+├── ARBITRAGE-UPGRADE.md              # changelog: why the spread was negative + every change explained
 └── foundry.toml
 ```
 
@@ -280,20 +284,27 @@ address list — not included here since I could only independently verify the B
 
 ## Multi-DEX, multi-asset, multi-hop scanning
 
-See **`ARBITRAGE-UPGRADE.md`** for the full writeup — why an earlier same-DEX example route returned
-a negative spread, every DEX/token covered (and THENA, deliberately excluded, with the reason why),
-and every change made to search across DEXs/assets/hops and account for flash-loan premium + swap
-fees + gas cost + slippage before ever submitting a transaction. Short version: the keeper bot
-(`keeper/src/routes.ts` + `keeper/src/index.ts`, `SCAN_MODE=dynamic`) generates and prices candidate
-2-hop and 3-hop routes across 6 base assets (USDT, USDC, FDUSD, WBNB, BTCB, ETH), 58 real verified
-intermediate tokens (`keeper/tokenlist.bsc.json`, sourced from PancakeSwap's own official token-list
-repo — 3,306+ possible pairs, well above the 200-pair bar), and 6 DEXs (PancakeSwap V2/V3, Biswap,
-ApeSwap, BakerySwap, Wombat Exchange), picking the best-quoting router+pool type independently for
-each hop. `TRIGGER_MODE=block` re-scans continuously on every new block instead of a fixed timer.
-Every candidate — accepted or rejected — gets a structured log line showing gross output, the
-slippage buffer, the flash-loan premium, the gas cost estimate, the resulting net profit, and the
-per-asset threshold it was compared against, so the "why" behind every decision is visible, not just
-the verdict. A trade is only ever submitted once net profit clears that threshold.
+See **`ARCHITECTURE.md`** for the system diagram and how the scanner/keeper/metrics/routes modules
+fit together, and **`ARBITRAGE-UPGRADE.md`** for the full changelog — why an earlier same-DEX example
+route returned a negative spread, every DEX/token covered (and THENA, deliberately excluded, with the
+reason why), and every change made to search across DEXs/assets/hops and account for flash-loan
+premium + swap fees + gas cost + slippage before ever submitting a transaction.
+
+Short version: `keeper/src/scanner.ts` (`SCAN_MODE=dynamic`) generates and prices candidate 2-hop and
+3-hop routes across 6 base assets (USDT, USDC, FDUSD, WBNB, BTCB, ETH), 58 real verified intermediate
+tokens (`keeper/tokenlist.bsc.json`, sourced from PancakeSwap's own official token-list repo —
+3,306+ possible pairs, well above the 200-pair bar), and 6 DEXs (PancakeSwap V2/V3, Biswap, ApeSwap,
+BakerySwap, Wombat Exchange), picking the best-quoting *liquid* router+pool independently for each
+hop (an explicit price-impact check rejects thin pools — `maxPriceImpactBps` in
+`routes.config.json`). `TRIGGER_MODE=block` re-scans continuously on every new block instead of a
+fixed timer. Every candidate — accepted or rejected — gets a structured log line showing gross
+output, the slippage buffer, the flash-loan premium, the gas cost estimate, the resulting net
+profit, and the per-asset threshold it was compared against. All evaluated candidates are then
+**ranked by net profit** (`keeper/src/scanner.ts`'s `Opportunity[]`), the top 5 are logged each
+cycle, and `keeper/src/keeper.ts` submits only the single best one that actually clears its
+threshold — never a trade with negative or insufficient expected profit. `keeper/src/metrics.ts`
+tracks evaluated/accepted/rejected-by-reason counts and cumulative estimated profit, logged as a
+summary every cycle.
 
 ## Security reminders
 

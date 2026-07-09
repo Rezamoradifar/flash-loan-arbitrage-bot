@@ -22,10 +22,14 @@ pragma solidity ^0.8.20;
  *      someone other than the person who wrote/requested it.
  *
  * SECURITY MODEL (read this before deploying):
- *  - Owner (Ownable) controls whitelists, caps, fees, pause, and the keeper
- *    address. Keeper can only call executeArbitrage() with a caller-chosen
- *    cycle of whitelisted routers/assets already under owner-set caps and
- *    thresholds — it cannot change configuration or move funds itself.
+ *  - Owner (Ownable2Step) controls whitelists, caps, fees, pause, and the
+ *    keeper address. Two-step ownership transfer (transferOwnership() then
+ *    the new owner calling acceptOwnership()) means a typo'd or unreachable
+ *    address can never permanently brick ownership the way single-step
+ *    Ownable can. Keeper can only call executeArbitrage() with a
+ *    caller-chosen cycle of whitelisted routers/assets already under
+ *    owner-set caps and thresholds — it cannot change configuration or move
+ *    funds itself.
  *  - executeOperation() is the Aave flash-loan callback. It is NOT
  *    nonReentrant because it is called by Aave synchronously from inside
  *    executeArbitrage(), which IS nonReentrant. Its safety instead comes from
@@ -38,7 +42,7 @@ pragma solidity ^0.8.20;
  */
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -144,7 +148,7 @@ interface IChainlinkAggregator {
     function decimals() external view returns (uint8);
 }
 
-contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
+contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable2Step, Pausable {
     using SafeERC20 for IERC20;
 
     // ============================================================
@@ -755,6 +759,23 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         emit SwapExecuted(step.router, step.tokenIn, step.tokenOut, amountIn, amountOut);
     }
 
+    /// @dev Shared by every _swapX below: rejects a zero quote outright (no
+    ///      liquidity) and applies the slippage tolerance to derive the
+    ///      on-chain amountOutMin. Extracted because all four router types
+    ///      repeated this exact two-line pattern.
+    function _minOutFromQuote(uint256 quotedOut, uint16 slippageBPS) internal pure returns (uint256) {
+        if (quotedOut == 0) revert InsufficientLiquidity();
+        return (quotedOut * (BPS_DENOMINATOR - slippageBPS)) / BPS_DENOMINATOR;
+    }
+
+    /// @dev Resets an approval to zero after a swap so a leftover allowance
+    ///      can never be reused by a router if this contract is later
+    ///      pointed at a bad path. Extracted because all four _swapX
+    ///      functions repeated this exact call.
+    function _resetApproval(address token, address spender) internal {
+        IERC20(token).forceApprove(spender, 0);
+    }
+
     function _swapV2(SwapStep memory step, uint256 amountIn, uint16 slippageBPS, uint256 deadline)
         internal
         returns (uint256 amountOut)
@@ -764,9 +785,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         path[1] = step.tokenOut;
 
         uint256[] memory quoted = IRouterV2(step.router).getAmountsOut(amountIn, path);
-        uint256 quotedOut = quoted[quoted.length - 1];
-        if (quotedOut == 0) revert InsufficientLiquidity();
-        uint256 amountOutMin = (quotedOut * (BPS_DENOMINATOR - slippageBPS)) / BPS_DENOMINATOR;
+        uint256 amountOutMin = _minOutFromQuote(quoted[quoted.length - 1], slippageBPS);
 
         IERC20(step.tokenIn).forceApprove(step.router, amountIn);
         uint256[] memory amounts = IRouterV2(step.router).swapExactTokensForTokens(
@@ -774,9 +793,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         );
         amountOut = amounts[amounts.length - 1];
 
-        // Reset approval to zero so a leftover allowance can never be reused
-        // by a router if this contract is later pointed at a bad path.
-        IERC20(step.tokenIn).forceApprove(step.router, 0);
+        _resetApproval(step.tokenIn, step.router);
     }
 
     function _swapV3(SwapStep memory step, uint256 amountIn, uint16 slippageBPS, uint256 deadline)
@@ -791,8 +808,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
             sqrtPriceLimitX96: 0
         });
         (uint256 quotedOut, , , ) = IQuoterV2(step.quoter).quoteExactInputSingle(qParams);
-        if (quotedOut == 0) revert InsufficientLiquidity();
-        uint256 amountOutMin = (quotedOut * (BPS_DENOMINATOR - slippageBPS)) / BPS_DENOMINATOR;
+        uint256 amountOutMin = _minOutFromQuote(quotedOut, slippageBPS);
 
         IERC20(step.tokenIn).forceApprove(step.router, amountIn);
 
@@ -808,7 +824,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         });
         amountOut = IRouterV3(step.router).exactInputSingle(swapParams);
 
-        IERC20(step.tokenIn).forceApprove(step.router, 0);
+        _resetApproval(step.tokenIn, step.router);
     }
 
     function _swapStable(SwapStep memory step, uint256 amountIn, uint16 slippageBPS)
@@ -816,12 +832,11 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         returns (uint256 amountOut)
     {
         uint256 quotedOut = IStableSwap(step.router).get_dy(step.stableI, step.stableJ, amountIn);
-        if (quotedOut == 0) revert InsufficientLiquidity();
-        uint256 amountOutMin = (quotedOut * (BPS_DENOMINATOR - slippageBPS)) / BPS_DENOMINATOR;
+        uint256 amountOutMin = _minOutFromQuote(quotedOut, slippageBPS);
 
         IERC20(step.tokenIn).forceApprove(step.router, amountIn);
         amountOut = IStableSwap(step.router).exchange(step.stableI, step.stableJ, amountIn, amountOutMin);
-        IERC20(step.tokenIn).forceApprove(step.router, 0);
+        _resetApproval(step.tokenIn, step.router);
     }
 
     function _swapWombat(SwapStep memory step, uint256 amountIn, uint16 slippageBPS, uint256 deadline)
@@ -829,12 +844,11 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         returns (uint256 amountOut)
     {
         (uint256 quotedOut, ) = IWombatPool(step.router).quotePotentialSwap(step.tokenIn, step.tokenOut, int256(amountIn));
-        if (quotedOut == 0) revert InsufficientLiquidity();
-        uint256 amountOutMin = (quotedOut * (BPS_DENOMINATOR - slippageBPS)) / BPS_DENOMINATOR;
+        uint256 amountOutMin = _minOutFromQuote(quotedOut, slippageBPS);
 
         IERC20(step.tokenIn).forceApprove(step.router, amountIn);
         (amountOut, ) = IWombatPool(step.router).swap(step.tokenIn, step.tokenOut, amountIn, amountOutMin, address(this), deadline);
-        IERC20(step.tokenIn).forceApprove(step.router, 0);
+        _resetApproval(step.tokenIn, step.router);
     }
 
     // ============================================================
