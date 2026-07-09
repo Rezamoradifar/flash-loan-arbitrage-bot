@@ -168,10 +168,13 @@ raw tx and event logs back out with `cast`, not just trusting the script's own c
 - **No real testnet/mainnet deployment.** That needs a funded wallet + a private key that only you
   should hold. `script/Deploy.s.sol` is ready for you to run yourself with your own key once you've
   verified the target Aave pool address (see below).
-- **No forked-mainnet test.** The sandbox this was built in has no RPC access. From a machine with
-  normal internet access, `forge test --fork-url <your-bsc-rpc> --fork-block-number <n>` against
-  the real Aave pool + real PancakeSwap pools would be the natural next step before ever touching
-  mainnet with a keeper key.
+- **No forked-mainnet test — but `test/ForkBsc.t.sol` is ready for you to run.** The sandbox this
+  was built in has no RPC access to test it here. Run it yourself:
+  `forge test --fork-url <your-bsc-rpc> --match-contract ForkBscTest -vvvv`. This forks *real* BNB
+  Chain state into a local, throwaway EVM snapshot — it can request a real flash loan from the real
+  Aave Pool and swap against real PancakeSwap liquidity, entirely locally, at zero cost and zero
+  risk (nothing is broadcast to real mainnet). Without `--fork-url` it skips itself cleanly instead
+  of failing. This is the natural next step before ever touching mainnet with a keeper key.
 - **No "guaranteed profit."** No contract can guarantee that. `test_RevertWhen_CycleNotProfitable`
   demonstrates the honest version of this: the contract *quotes on-chain before borrowing* and
   reverts (no loan taken) if the cycle isn't actually profitable net of fees. Whether a *real*
