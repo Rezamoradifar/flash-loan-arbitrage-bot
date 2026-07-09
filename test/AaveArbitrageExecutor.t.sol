@@ -8,6 +8,7 @@ import {MockAavePool} from "../src/mocks/MockAavePool.sol";
 import {MockRouterV2} from "../src/mocks/MockRouterV2.sol";
 import {MockRouterV3} from "../src/mocks/MockRouterV3.sol";
 import {MockStableSwap} from "../src/mocks/MockStableSwap.sol";
+import {MockWombatPool} from "../src/mocks/MockWombatPool.sol";
 import {MockChainlinkAggregator} from "../src/mocks/MockChainlinkAggregator.sol";
 
 contract AaveArbitrageExecutorTest is Test {
@@ -308,5 +309,43 @@ contract AaveArbitrageExecutorTest is Test {
     function test_EstimateGasCostInAsset_ReturnsZeroWithoutFeeds() public view {
         uint256 cost = executor.estimateGasCostInAsset(address(usdt), address(tokX), 500_000, 5 gwei);
         assertEq(cost, 0);
+    }
+
+    /// @notice Exercises the new Wombat-style router type (routerType == 3):
+    ///         a favorably-skewed V2 hop into a near-1:1 Wombat hop back to
+    ///         USDT, proving a real flash loan + Wombat swap + repay cycle
+    ///         actually executes end to end, not just compiles.
+    function test_ArbitrageWithWombatRouterType() public {
+        // V2 pool skewed so USDT -> TOKX pays out ~1.5x fair value.
+        MockRouterV2 skewedRouter = new MockRouterV2(address(usdt), address(tokX), 8_000_000e18, 12_000_000e18, 30);
+        usdt.mint(address(skewedRouter), 8_000_000e18);
+        tokX.mint(address(skewedRouter), 12_000_000e18);
+
+        // Wombat pool TOKX -> USDT near 1:1 minus a small 5bps haircut.
+        address[] memory poolTokens = new address[](2);
+        poolTokens[0] = address(tokX);
+        poolTokens[1] = address(usdt);
+        MockWombatPool wombatPool = new MockWombatPool(poolTokens, 5);
+        tokX.mint(address(wombatPool), 5_000_000e18);
+        usdt.mint(address(wombatPool), 5_000_000e18);
+
+        vm.startPrank(owner);
+        executor.setRouterAllowed(address(skewedRouter), true);
+        executor.setRouterAllowed(address(wombatPool), true);
+        vm.stopPrank();
+
+        AaveArbitrageExecutorV3.SwapStep[] memory steps = new AaveArbitrageExecutorV3.SwapStep[](2);
+        steps[0] = AaveArbitrageExecutorV3.SwapStep(
+            address(skewedRouter), address(0), 0, address(usdt), address(tokX), 0, 0, 0
+        );
+        steps[1] =
+            AaveArbitrageExecutorV3.SwapStep(address(wombatPool), address(0), 3, address(tokX), address(usdt), 0, 0, 0);
+
+        uint256 profitBefore = usdt.balanceOf(profitRecipient);
+
+        vm.prank(keeperBot);
+        executor.executeArbitrage(address(usdt), 100_000e18, steps, 0, 0);
+
+        assertGt(usdt.balanceOf(profitRecipient), profitBefore, "no profit from Wombat-style route");
     }
 }

@@ -48,6 +48,8 @@ contract ForkBscTest is Test {
     address constant BTCB = 0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c;
     address constant ETH = 0x2170Ed0880ac9A755fd29B2688956BD959F933F8;
     address constant CHAINLINK_BNB_USD = 0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE;
+    address constant BAKERYSWAP_ROUTER = 0xCDe540d7eAFE93aC5fE6233Bee57E1270D3E330F;
+    address constant WOMBAT_MAIN_POOL = 0x312Bc7eAAF93f1C60Dc5AfC115FcCDE161055fb0;
 
     AaveArbitrageExecutorV3 executor;
     address owner = makeAddr("owner");
@@ -67,6 +69,8 @@ contract ForkBscTest is Test {
         executor.setRouterAllowed(PANCAKE_V2_ROUTER, true);
         executor.setRouterAllowed(BISWAP_ROUTER, true);
         executor.setRouterAllowed(APESWAP_ROUTER, true);
+        executor.setRouterAllowed(BAKERYSWAP_ROUTER, true);
+        executor.setRouterAllowed(WOMBAT_MAIN_POOL, true);
         // multi-asset support: whitelist every base asset requirement #4 asks for
         executor.setAssetAllowed(USDT, true, 0);
         executor.setAssetAllowed(USDC, true, 0);
@@ -86,6 +90,28 @@ contract ForkBscTest is Test {
         assertGt(answer, 0, "BNB/USD feed returned non-positive answer");
         assertLt(block.timestamp - updatedAt, 1 days, "BNB/USD feed looks stale for this fork block");
         console.log("Real BNB/USD (8 decimals):", uint256(answer));
+    }
+
+    function test_BakerySwapHasRealCode() public view {
+        assertGt(BAKERYSWAP_ROUTER.code.length, 0, "BakerySwap router has no code at this fork block");
+    }
+
+    /// @notice Real Wombat Main Pool sanity check via its actual verified
+    ///         interface (quotePotentialSwap - confirmed against
+    ///         wombat-exchange/v1-core's own source, not guessed). Logs
+    ///         rather than hard-asserts, since the Main Pool's exact token
+    ///         set (BTCB/BNB/USDT per its own docs) can change over time.
+    function test_WombatPoolQuoteSanityCheck() public view {
+        assertGt(WOMBAT_MAIN_POOL.code.length, 0, "Wombat Main Pool has no code at this fork block");
+        (bool ok, bytes memory data) = WOMBAT_MAIN_POOL.staticcall(
+            abi.encodeWithSignature("quotePotentialSwap(address,address,int256)", USDT, WBNB, int256(1_000e18))
+        );
+        if (ok) {
+            (uint256 potentialOutcome,) = abi.decode(data, (uint256, uint256));
+            console.log("1,000 USDT -> WBNB via Wombat Main Pool (real quote):", potentialOutcome);
+        } else {
+            console.log("Wombat Main Pool does not currently hold a direct USDT/WBNB route at this block");
+        }
     }
 
     /// @notice Sanity-checks direct PancakeSwap V2 liquidity for every base

@@ -1,43 +1,10 @@
 {
-  "_readme": "Dynamic multi-DEX, multi-asset, multi-hop route scanner config. Copy to routes.config.json. Addresses cross-checked against BscScan and each protocol's own docs/source (see ../keeper/addresses.bsc.json and ../keeper/tokenlist.bsc.json for full source list) - not pulled from memory. wrappedNative must be whitelisted as an asset AND have a Chainlink price feed set on-chain (setPriceFeed) for gas-cost-in-asset accounting to work; same for every baseAsset you want gas-aware filtering on. intermediateTokens has 58 real tokens (from PancakeSwap's own official token-list repo) - that alone yields far more than 200 candidate pairs via the token-graph x router-registry approach in routes.ts. THENA is deliberately NOT included: its V3 AMM (Algebra Integral, dynamic fees) isn't interface-compatible with the Uniswap-V3-style quoter already implemented, and its legacy V2-style router address couldn't be independently cross-verified with the same confidence as the routers below - see ARBITRAGE-UPGRADE.md.",
-  "wrappedNative": {
-    "symbol": "WBNB",
-    "address": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-    "decimals": 18
-  },
-  "baseAssets": [
-    {
-      "symbol": "USDT",
-      "address": "0x55d398326f99059fF775485246999027B3197955",
-      "decimals": 18
-    },
-    {
-      "symbol": "USDC",
-      "address": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
-      "decimals": 18
-    },
-    {
-      "symbol": "FDUSD",
-      "address": "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409",
-      "decimals": 18
-    },
-    {
-      "symbol": "WBNB",
-      "address": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-      "decimals": 18
-    },
-    {
-      "symbol": "BTCB",
-      "address": "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c",
-      "decimals": 18
-    },
-    {
-      "symbol": "ETH",
-      "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8",
-      "decimals": 18
-    }
+  "_readme": "58 real, verified BEP-20 token addresses on BNB Chain (chainId 56), pulled directly from PancakeSwap's own official token-list repository (github.com/pancakeswap/token-list) - src/tokens/pancakeswap-default.json (their strictest, most-vetted list) plus a hand-picked subset of well-known major/blue-chip symbols from src/tokens/pancakeswap-extended.json. None of these addresses were guessed or pulled from memory. This is a reasonable proxy for 'high-liquidity' tokens (established, actively-traded assets), NOT a live TVL-ranked list - PancakeSwap's own token lists don't encode real-time liquidity data. Before relying on any specific pair for real trades, verify it actually has deep liquidity on the DEX you're routing through (check the pool directly, e.g. via the DEX's own UI or getReserves()) - being a real, listed token does not guarantee a deep pool exists for every pair with every other token here. 58 tokens already yields 58*57=3,306 ordered pair combinations, well above the 200-pair requirement, via the same token-graph x router-registry approach in routes.ts.",
+  "sources": [
+    "https://github.com/pancakeswap/token-list (src/tokens/pancakeswap-default.json, src/tokens/pancakeswap-extended.json)"
   ],
-  "intermediateTokens": [
+  "chainId": 56,
+  "tokens": [
     {
       "symbol": "ADA",
       "address": "0x3EE2200Efb3400fAbB9AacF31297cBdD1d435D47",
@@ -328,63 +295,5 @@
       "address": "0xb86AbCb37C3A4B64f74f59301AFF131a1BEcC787",
       "decimals": 12
     }
-  ],
-  "routers": [
-    {
-      "name": "PancakeSwapV2",
-      "address": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-      "routerType": 0
-    },
-    {
-      "name": "Biswap",
-      "address": "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8",
-      "routerType": 0
-    },
-    {
-      "name": "ApeSwap",
-      "address": "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7",
-      "routerType": 0
-    },
-    {
-      "name": "BakerySwap",
-      "address": "0xCDe540d7eAFE93aC5fE6233Bee57E1270D3E330F",
-      "routerType": 0
-    },
-    {
-      "name": "PancakeSwapV3",
-      "address": "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
-      "routerType": 1,
-      "quoterAddress": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997",
-      "feeTiers": [
-        100,
-        500,
-        2500,
-        10000
-      ]
-    },
-    {
-      "name": "WombatMainPool",
-      "address": "0x312Bc7eAAF93f1C60Dc5AfC115FcCDE161055fb0",
-      "routerType": 3
-    }
-  ],
-  "probeAmountByAssetAddress": {
-    "0x55d398326f99059fF775485246999027B3197955": "1000000000000000000000",
-    "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d": "1000000000000000000000",
-    "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409": "1000000000000000000000",
-    "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "2000000000000000000",
-    "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c": "20000000000000000",
-    "0x2170Ed0880ac9A755fd29B2688956BD959F933F8": "300000000000000000"
-  },
-  "gasUnitsPerTrade": 700000,
-  "slippageBufferBps": 30,
-  "executionSlippageBps": 50,
-  "minProfitByAssetAddress": {
-    "0x55d398326f99059fF775485246999027B3197955": "5000000000000000000",
-    "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d": "5000000000000000000",
-    "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409": "5000000000000000000",
-    "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "10000000000000000",
-    "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c": "100000000000000",
-    "0x2170Ed0880ac9A755fd29B2688956BD959F933F8": "2000000000000000"
-  }
+  ]
 }

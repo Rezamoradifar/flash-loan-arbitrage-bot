@@ -5,8 +5,9 @@ pragma solidity ^0.8.20;
  * @title AaveArbitrageExecutorV3
  * @notice Owner/keeper-controlled flash-loan arbitrage executor for BNB Chain
  *         using Aave V3 flash loans, with a whitelisted, modular router
- *         architecture (V2-style, V3-style, and Curve/Ellipsis-style stable
- *         pools) and atomic 2- or 3-step (triangular) arbitrage paths.
+ *         architecture (V2-style, V3-style, Curve/Ellipsis-style stable
+ *         pools, and Wombat-style asset-liability pools) and atomic 2- or
+ *         3-step (triangular) arbitrage paths.
  *
  * @dev THIS IS NOT AN AUDIT. Based on AaveArbitrageExecutorV2, extended with:
  *        - a separate `keeper` role so an automated off-chain bot can trigger
@@ -117,6 +118,21 @@ interface IStableSwap {
     function get_dy(int128 i, int128 j, uint256 dx) external view returns (uint256);
 }
 
+/// @dev Wombat Exchange-style asset-liability pool. Interface confirmed
+///      against Wombat's own v1-core source (contracts/wombat-core/interfaces/IPool.sol),
+///      not guessed: unlike Curve, Wombat addresses tokens directly (no
+///      per-pool index), which is why SwapStep's stableI/stableJ fields are
+///      unused for this router type.
+interface IWombatPool {
+    function swap(address fromToken, address toToken, uint256 fromAmount, uint256 minimumToAmount, address to, uint256 deadline)
+        external
+        returns (uint256 actualToAmount, uint256 haircut);
+    function quotePotentialSwap(address fromToken, address toToken, int256 fromAmount)
+        external
+        view
+        returns (uint256 potentialOutcome, uint256 haircut);
+}
+
 /// @dev Minimal Chainlink-compatible interface — avoids pulling in the full
 ///      full chainlink/contracts npm dependency just for this one call.
 interface IChainlinkAggregator {
@@ -138,7 +154,8 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     /// @dev A single-hop swap. Chaining 2 or 3 of these forms the full arbitrage cycle.
     ///      routerType: 0 = V2-style (getAmountsOut/swapExactTokensForTokens),
     ///                  1 = V3-style (QuoterV2/exactInputSingle),
-    ///                  2 = Stable-style (Curve/Ellipsis get_dy/exchange).
+    ///                  2 = Stable-style (Curve/Ellipsis get_dy/exchange),
+    ///                  3 = Wombat-style (quotePotentialSwap/swap, addresses not indices).
     struct SwapStep {
         address router;
         address quoter;      // only used when routerType == 1; can be address(0) otherwise
@@ -159,6 +176,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     uint8 private constant ROUTER_TYPE_V2 = 0;
     uint8 private constant ROUTER_TYPE_V3 = 1;
     uint8 private constant ROUTER_TYPE_STABLE = 2;
+    uint8 private constant ROUTER_TYPE_WOMBAT = 3;
     uint8 private constant MAX_STEPS = 3;
 
     // ============================================================
@@ -592,8 +610,11 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
             });
             (uint256 amountOut, , , ) = IQuoterV2(step.quoter).quoteExactInputSingle(qParams);
             return amountOut;
-        } else {
+        } else if (step.routerType == ROUTER_TYPE_STABLE) {
             return IStableSwap(step.router).get_dy(step.stableI, step.stableJ, amountIn);
+        } else {
+            (uint256 potentialOutcome, ) = IWombatPool(step.router).quotePotentialSwap(step.tokenIn, step.tokenOut, int256(amountIn));
+            return potentialOutcome;
         }
     }
 
@@ -623,7 +644,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
             if (!allowedRouters[s.router]) revert RouterNotAllowed();
             if (s.routerType == ROUTER_TYPE_V3 && s.quoter == address(0)) revert InvalidStep();
             if (s.routerType == ROUTER_TYPE_STABLE && s.stableI == s.stableJ) revert InvalidStep();
-            if (s.routerType > ROUTER_TYPE_STABLE) revert InvalidStep();
+            if (s.routerType > ROUTER_TYPE_WOMBAT) revert InvalidStep();
             if (i > 0 && steps[i - 1].tokenOut != s.tokenIn) revert CycleMismatch();
             // Safe: len is capped at MAX_STEPS (3), can never overflow.
             unchecked {
@@ -724,8 +745,10 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
             amountOut = _swapV2(step, amountIn, slippageBPS, deadline);
         } else if (step.routerType == ROUTER_TYPE_V3) {
             amountOut = _swapV3(step, amountIn, slippageBPS, deadline);
-        } else {
+        } else if (step.routerType == ROUTER_TYPE_STABLE) {
             amountOut = _swapStable(step, amountIn, slippageBPS);
+        } else {
+            amountOut = _swapWombat(step, amountIn, slippageBPS, deadline);
         }
 
         if (amountOut == 0) revert SwapFailed();
@@ -798,6 +821,19 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
 
         IERC20(step.tokenIn).forceApprove(step.router, amountIn);
         amountOut = IStableSwap(step.router).exchange(step.stableI, step.stableJ, amountIn, amountOutMin);
+        IERC20(step.tokenIn).forceApprove(step.router, 0);
+    }
+
+    function _swapWombat(SwapStep memory step, uint256 amountIn, uint16 slippageBPS, uint256 deadline)
+        internal
+        returns (uint256 amountOut)
+    {
+        (uint256 quotedOut, ) = IWombatPool(step.router).quotePotentialSwap(step.tokenIn, step.tokenOut, int256(amountIn));
+        if (quotedOut == 0) revert InsufficientLiquidity();
+        uint256 amountOutMin = (quotedOut * (BPS_DENOMINATOR - slippageBPS)) / BPS_DENOMINATOR;
+
+        IERC20(step.tokenIn).forceApprove(step.router, amountIn);
+        (amountOut, ) = IWombatPool(step.router).swap(step.tokenIn, step.tokenOut, amountIn, amountOutMin, address(this), deadline);
         IERC20(step.tokenIn).forceApprove(step.router, 0);
     }
 

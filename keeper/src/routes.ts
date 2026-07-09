@@ -9,13 +9,17 @@ export interface TokenInfo {
 export interface RouterInfo {
   name: string;
   address: string;
-  routerType: 0 | 1 | 2;
+  routerType: 0 | 1 | 3;
+  /** V3 only: the separate QuoterV2 contract address (PancakeSwap V3 splits router/quoter). */
+  quoterAddress?: string;
+  /** V3 only: fee tiers to try, e.g. PancakeSwap V3 uses [100, 500, 2500, 10000]. */
+  feeTiers?: number[];
 }
 
 export interface HopCandidate {
   router: string;
   quoter: string;
-  routerType: 0 | 1 | 2;
+  routerType: 0 | 1 | 2 | 3;
   tokenIn: string;
   tokenOut: string;
   v3Fee: number;
@@ -34,21 +38,114 @@ export interface RouteCandidate {
 }
 
 const V2_ROUTER_ABI = ["function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)"];
+const V3_QUOTER_ABI = [
+  "function quoteExactInputSingle((address tokenIn,address tokenOut,uint256 amountIn,uint24 fee,uint160 sqrtPriceLimitX96)) returns (uint256 amountOut, uint160 sqrtPriceX96After, uint32 initializedTicksCrossed, uint256 gasEstimate)",
+];
+const WOMBAT_POOL_ABI = [
+  "function quotePotentialSwap(address fromToken, address toToken, int256 fromAmount) view returns (uint256 potentialOutcome, uint256 haircut)",
+];
 const ZERO_QUOTER = "0x0000000000000000000000000000000000dEaD";
 
+async function quoteV2(provider: JsonRpcProvider, r: RouterInfo, tokenIn: TokenInfo, tokenOut: TokenInfo, amountIn: bigint): Promise<HopCandidate | null> {
+  try {
+    const c = new Contract(r.address, V2_ROUTER_ABI, provider);
+    const amounts: bigint[] = await c.getAmountsOut(amountIn, [tokenIn.address, tokenOut.address]);
+    const out = amounts[amounts.length - 1];
+    if (out === 0n) return null;
+    return {
+      router: r.address,
+      quoter: ZERO_QUOTER,
+      routerType: 0,
+      tokenIn: tokenIn.address,
+      tokenOut: tokenOut.address,
+      v3Fee: 0,
+      stableI: 0,
+      stableJ: 0,
+      quotedOut: out,
+      routerName: r.name,
+    };
+  } catch {
+    return null; // no pool for this pair on this router
+  }
+}
+
+/** Tries every configured fee tier and keeps whichever pool quotes best - PancakeSwap V3
+ *  doesn't guarantee every tier has a deployed/liquid pool for a given pair. */
+async function quoteV3(provider: JsonRpcProvider, r: RouterInfo, tokenIn: TokenInfo, tokenOut: TokenInfo, amountIn: bigint): Promise<HopCandidate | null> {
+  if (!r.quoterAddress || !r.feeTiers?.length) return null;
+  const quoterContract = new Contract(r.quoterAddress, V3_QUOTER_ABI, provider);
+
+  let best: HopCandidate | null = null;
+  await Promise.all(
+    r.feeTiers.map(async (fee) => {
+      try {
+        const result = await quoterContract.quoteExactInputSingle.staticCall({
+          tokenIn: tokenIn.address,
+          tokenOut: tokenOut.address,
+          amountIn,
+          fee,
+          sqrtPriceLimitX96: 0n,
+        });
+        const out: bigint = result[0];
+        if (out > 0n && (!best || out > best.quotedOut)) {
+          best = {
+            router: r.address,
+            quoter: r.quoterAddress!,
+            routerType: 1,
+            tokenIn: tokenIn.address,
+            tokenOut: tokenOut.address,
+            v3Fee: fee,
+            stableI: 0,
+            stableJ: 0,
+            quotedOut: out,
+            routerName: `${r.name}(fee=${fee})`,
+          };
+        }
+      } catch {
+        // no pool at this fee tier - skip
+      }
+    })
+  );
+  return best;
+}
+
+async function quoteWombat(provider: JsonRpcProvider, r: RouterInfo, tokenIn: TokenInfo, tokenOut: TokenInfo, amountIn: bigint): Promise<HopCandidate | null> {
+  try {
+    const c = new Contract(r.address, WOMBAT_POOL_ABI, provider);
+    const [potentialOutcome]: [bigint, bigint] = await c.quotePotentialSwap(tokenIn.address, tokenOut.address, amountIn);
+    if (potentialOutcome === 0n) return null;
+    return {
+      router: r.address,
+      quoter: ZERO_QUOTER,
+      routerType: 3,
+      tokenIn: tokenIn.address,
+      tokenOut: tokenOut.address,
+      v3Fee: 0,
+      stableI: 0,
+      stableJ: 0,
+      quotedOut: potentialOutcome,
+      routerName: r.name,
+    };
+  } catch {
+    return null; // tokenIn/tokenOut not both in this pool
+  }
+}
+
 /**
- * Multi-DEX scanning (requirement #3): queries every whitelisted V2-style
- * router for a single tokenIn->tokenOut hop and returns whichever one quotes
- * the best output. This is what makes route generation "multi-DEX" instead
- * of hardcoded to one router - each hop of every candidate route
- * independently picks its own best-priced venue.
+ * Multi-DEX scanning (requirement #3): queries every whitelisted router for a
+ * single tokenIn->tokenOut hop - across V2-style (PancakeSwap V2, Biswap,
+ * ApeSwap, BakerySwap), V3-style (PancakeSwap V3, tried across every
+ * configured fee tier), and Wombat-style asset-liability pools - and returns
+ * whichever quotes the best output. This is what makes route generation
+ * genuinely multi-DEX instead of hardcoded to one router: each hop of every
+ * candidate route independently picks its own best-priced venue and pool
+ * type.
  *
- * Only V2-style routers are compared here (uniform getAmountsOut interface
- * makes batching trivial and cheap). V3/stable routers can still be used by
- * hand-authored routes in strategies.json; extending the auto-scanner to
- * quote those too is a straightforward follow-up (V3 quoters are non-view
- * and more expensive to batch, so it's a deliberate v1 scope cut, not an
- * oversight).
+ * Curve/Ellipsis-style pools (routerType 2) are deliberately NOT auto-scanned
+ * here: unlike the other three types, a Curve-style pool needs per-pool token
+ * *indices* (stableI/stableJ), which aren't derivable from token addresses
+ * alone - they're pool-specific metadata. Curve-style hops remain fully
+ * usable via hand-authored routes in strategies.json (static mode).
  */
 export async function findBestHop(
   provider: JsonRpcProvider,
@@ -61,36 +158,20 @@ export async function findBestHop(
   const cacheKey = `${tokenIn.address.toLowerCase()}|${tokenOut.address.toLowerCase()}|${amountIn.toString()}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey)!;
 
-  let best: HopCandidate | null = null;
-  const path = [tokenIn.address, tokenOut.address];
-
-  await Promise.all(
-    routers
-      .filter((r) => r.routerType === 0)
-      .map(async (r) => {
-        try {
-          const c = new Contract(r.address, V2_ROUTER_ABI, provider);
-          const amounts: bigint[] = await c.getAmountsOut(amountIn, path);
-          const out = amounts[amounts.length - 1];
-          if (out > 0n && (!best || out > best.quotedOut)) {
-            best = {
-              router: r.address,
-              quoter: ZERO_QUOTER,
-              routerType: 0,
-              tokenIn: tokenIn.address,
-              tokenOut: tokenOut.address,
-              v3Fee: 0,
-              stableI: 0,
-              stableJ: 0,
-              quotedOut: out,
-              routerName: r.name,
-            };
-          }
-        } catch {
-          // No pool for this pair on this router - not an error, just skip it.
-        }
-      })
+  const results = await Promise.all(
+    routers.map((r) => {
+      if (r.routerType === 0) return quoteV2(provider, r, tokenIn, tokenOut, amountIn);
+      if (r.routerType === 1) return quoteV3(provider, r, tokenIn, tokenOut, amountIn);
+      return quoteWombat(provider, r, tokenIn, tokenOut, amountIn);
+    })
   );
+
+  let best: HopCandidate | null = null;
+  for (const candidate of results) {
+    if (candidate && (!best || candidate.quotedOut > best.quotedOut)) {
+      best = candidate;
+    }
+  }
 
   cache.set(cacheKey, best);
   return best;

@@ -111,8 +111,8 @@ role that lets a bot actually fire them automatically.
 ```
 flash-arb/
 ├── src/
-│   ├── AaveArbitrageExecutorV3.sol   # the executor contract
-│   └── mocks/                        # MockAavePool, MockERC20, MockRouterV2/V3, MockStableSwap
+│   ├── AaveArbitrageExecutorV3.sol   # the executor contract (V2/V3/Curve-stable/Wombat routing)
+│   └── mocks/                        # MockAavePool, MockERC20, MockRouterV2/V3, MockStableSwap, MockWombatPool
 ├── test/
 │   ├── AaveArbitrageExecutor.t.sol   # deterministic Foundry tests (mocks, no network needed)
 │   └── ForkBsc.t.sol                 # tests against REAL BNB Chain state (needs --fork-url)
@@ -120,9 +120,10 @@ flash-arb/
 │   ├── Deploy.s.sol                  # deploy against a REAL Aave pool (mainnet/testnet)
 │   └── DeployLocalDemo.s.sol         # deploy + run one full arbitrage against local mocks
 ├── keeper/                           # off-chain TypeScript bot (ethers.js)
-│   ├── src/index.ts                  # poll loop: dynamic scan or static routes → decide → execute
-│   ├── src/routes.ts                 # multi-DEX, multi-hop route generator (dynamic mode)
-│   ├── routes.config.example.json    # dynamic-mode config: assets/routers/thresholds
+│   ├── src/index.ts                  # poll or block-driven loop: scan → decide (logged) → execute
+│   ├── src/routes.ts                 # multi-DEX (V2/V3/Wombat), multi-hop route generator
+│   ├── routes.config.example.json    # dynamic-mode config: 6 base assets, 58 tokens, 6 DEXs
+│   ├── tokenlist.bsc.json            # 58 verified tokens, sourced from PancakeSwap's own repo
 │   ├── strategies.example.json       # static-mode fixed route (SCAN_MODE=static)
 │   ├── addresses.bsc.json            # verified BSC contract/token addresses + sources
 │   └── .env.example
@@ -260,6 +261,8 @@ and sources:
 | PancakeSwap V3 QuoterV2 | `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
 | Biswap Router | `0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8` |
 | ApeSwap Router | `0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7` |
+| BakerySwap Router | `0xCDe540d7eAFE93aC5fE6233Bee57E1270D3E330F` |
+| Wombat Exchange Main Pool | `0x312Bc7eAAF93f1C60Dc5AfC115FcCDE161055fb0` |
 | Chainlink BNB/USD feed | `0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE` |
 | WBNB | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` |
 | USDT (BSC-USD) | `0x55d398326f99059fF775485246999027B3197955` |
@@ -277,14 +280,20 @@ address list — not included here since I could only independently verify the B
 
 ## Multi-DEX, multi-asset, multi-hop scanning
 
-See **`ARBITRAGE-UPGRADE.md`** for a full writeup of why an earlier same-DEX example route returned
-a negative spread, and every change made to search across DEXs/assets/hops and account for flash-loan
-premium + swap fees + gas cost + slippage before ever submitting a transaction. Short version: the
-keeper bot (`keeper/src/routes.ts` + `keeper/src/index.ts`, `SCAN_MODE=dynamic`) now generates and
-prices candidate 2-hop and 3-hop routes across every configured base asset (USDT, USDC, FDUSD,
-WBNB, BTCB, ETH) and DEX (PancakeSwap V2/V3, Biswap, ApeSwap), picking the best-quoting router
-independently for each hop, and only submits a trade once net profit — after the flash-loan premium,
-swap fees, an on-chain gas-cost estimate, and a slippage buffer — clears a per-asset threshold.
+See **`ARBITRAGE-UPGRADE.md`** for the full writeup — why an earlier same-DEX example route returned
+a negative spread, every DEX/token covered (and THENA, deliberately excluded, with the reason why),
+and every change made to search across DEXs/assets/hops and account for flash-loan premium + swap
+fees + gas cost + slippage before ever submitting a transaction. Short version: the keeper bot
+(`keeper/src/routes.ts` + `keeper/src/index.ts`, `SCAN_MODE=dynamic`) generates and prices candidate
+2-hop and 3-hop routes across 6 base assets (USDT, USDC, FDUSD, WBNB, BTCB, ETH), 58 real verified
+intermediate tokens (`keeper/tokenlist.bsc.json`, sourced from PancakeSwap's own official token-list
+repo — 3,306+ possible pairs, well above the 200-pair bar), and 6 DEXs (PancakeSwap V2/V3, Biswap,
+ApeSwap, BakerySwap, Wombat Exchange), picking the best-quoting router+pool type independently for
+each hop. `TRIGGER_MODE=block` re-scans continuously on every new block instead of a fixed timer.
+Every candidate — accepted or rejected — gets a structured log line showing gross output, the
+slippage buffer, the flash-loan premium, the gas cost estimate, the resulting net profit, and the
+per-asset threshold it was compared against, so the "why" behind every decision is visible, not just
+the verdict. A trade is only ever submitted once net profit clears that threshold.
 
 ## Security reminders
 

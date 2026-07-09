@@ -55,6 +55,12 @@ export const config = {
   // "dynamic" = multi-DEX/multi-asset/multi-hop auto-scanner (routes.config.json).
   // "static" = fixed hand-authored routes (strategies.json), for a known-good route.
   scanMode: (process.env.SCAN_MODE ?? "dynamic").toLowerCase(),
+  // "block" = re-evaluate on every new block (continuous - requirement: "evaluate
+  //   opportunities continuously"). Needs a WebSocket-capable RPC_URL (wss://...);
+  //   falls back to polling automatically if the provider doesn't support subscriptions.
+  // "poll" = fixed-interval polling (POLL_INTERVAL_MS) - works with any RPC, including
+  //   plain HTTP endpoints that can't push block notifications.
+  triggerMode: (process.env.TRIGGER_MODE ?? "poll").toLowerCase(),
   strategiesFile: process.env.STRATEGIES_FILE ?? "./strategies.json",
   routesConfigFile: process.env.ROUTES_CONFIG_FILE ?? "./routes.config.json",
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 6000),
