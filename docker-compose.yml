@@ -5,13 +5,23 @@ services:
       dockerfile: Dockerfile
       args:
         NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS:-}
-        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-}
+        # Deliberately NOT NEXT_PUBLIC_RPC_URL here - the real upstream RPC
+        # (possibly a paid/keyed provider) is passed as the server-only
+        # RPC_URL runtime env var below instead, so it's read at request
+        # time by src/app/api/rpc/route.ts and never baked into the client
+        # bundle at build time. Leave NEXT_PUBLIC_RPC_URL unset so the
+        # browser talks to that same-origin proxy route by default.
         # Points at nginx's proxied path by default so the browser never
         # needs the keeper's internal Docker-network address directly.
         NEXT_PUBLIC_KEEPER_API_URL: ${NEXT_PUBLIC_KEEPER_API_URL:-/keeper-api}
         NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
         NEXT_PUBLIC_EVENTS_LOOKBACK_BLOCKS: ${NEXT_PUBLIC_EVENTS_LOOKBACK_BLOCKS:-5000}
     restart: unless-stopped
+    environment:
+      # Server-only - the real (possibly paid/keyed) upstream RPC endpoint.
+      # Read per-request by the /api/rpc proxy route; never exposed to the
+      # browser. Set this in a root .env file - see .env.example.
+      RPC_URL: ${RPC_URL:-}
     expose:
       - "3000"
 

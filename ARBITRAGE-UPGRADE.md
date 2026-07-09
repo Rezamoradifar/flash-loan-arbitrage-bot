@@ -380,3 +380,33 @@ all populate with real data (owner/keeper addresses, operation counts, event tim
 router charts, transaction table) - then repeated against a deliberately unreachable RPC URL and
 confirmed every page resolves to a clear error state (banner + in-page message) within ~3.5 seconds
 instead of hanging.
+
+## 16. Server-side RPC proxy - keeping a paid/keyed RPC URL out of the client bundle
+
+The user planned to point `NEXT_PUBLIC_RPC_URL` at a metered RPC provider (Tatum) with an API key
+embedded in the URL's query string. Any `NEXT_PUBLIC_*` env var is inlined into the client JavaScript
+bundle at build time - it would have been visible to every site visitor via view-source or the
+Network tab, exposing a paid key to the public internet.
+
+Added `frontend/src/app/api/rpc/route.ts`, a same-origin Next.js Route Handler that proxies JSON-RPC
+requests to a server-only `RPC_URL` env var (no `NEXT_PUBLIC_` prefix, read at request time, never
+shipped to the browser). `wagmiConfig.ts`'s `rpcUrl` now defaults to `/api/rpc` instead of a direct
+endpoint - the browser only ever talks to its own origin. This also incidentally makes CORS a
+non-issue regardless of upstream provider, since only the Node server (not the browser) ever
+contacts the real RPC host.
+
+The proxy denylists write/introspection methods (`eth_sendRawTransaction`, `eth_sendTransaction`,
+`eth_sign*`, `personal_*`/`debug_*`/`admin_*`/`wallet_*`/`miner_*`/`txpool_*`) - this dashboard's
+public client only ever needs read methods (calls, logs, block/gas queries, filter polling for live
+event watching); wallet-initiated transactions go through the connected wallet's own provider
+directly, never through this route. Also applies a simple in-memory per-IP sliding-window rate limit
+(120 req/min) so the now-public endpoint can't be used to freely burn a metered upstream key's quota.
+
+Verified end-to-end against the same local Anvil deployment: confirmed via Playwright network
+tracing that the browser contacts only its own origin (`127.0.0.1:3100`) for every request - the
+real upstream RPC URL never appears anywhere in browser-visible traffic - while the dashboard still
+resolves owner/keeper/event/analytics data correctly through the proxy.
+
+`NEXT_PUBLIC_RPC_URL` still exists as an opt-in escape hatch (talk to an RPC directly from the
+browser, bypassing the proxy) for deployments with no Node server to run the route handler (e.g. a
+static export) - only appropriate for an endpoint with no secret embedded in its URL.

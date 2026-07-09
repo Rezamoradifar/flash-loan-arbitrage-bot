@@ -22,15 +22,18 @@ if (!walletConnectProjectId && process.env.NODE_ENV !== "production") {
 const PLACEHOLDER_PROJECT_ID = "00000000000000000000000000000000".slice(0, 32);
 
 /**
- * Falls back to a CORS-friendly public BSC RPC (PublicNode) when
- * NEXT_PUBLIC_RPC_URL is unset, rather than viem's own baked-in chain
- * default (bsc-dataseed.binance.org), which frequently rejects or hangs on
- * direct browser requests (no permissive CORS headers, aggressive rate
- * limiting) - that mismatch is a common cause of "every page stuck loading"
- * reports. Set your own paid endpoint (Ankr/QuickNode/NodeReal) for real
- * production traffic; the public fallback is fine for light/dev use only.
+ * Defaults to this app's own same-origin /api/rpc route (see
+ * src/app/api/rpc/route.ts) instead of talking to a real RPC endpoint
+ * directly from the browser. That server route holds the actual upstream
+ * URL in the server-only RPC_URL env var (no NEXT_PUBLIC_ prefix, never
+ * shipped to the client) - so a paid/keyed provider (Tatum, Ankr,
+ * QuickNode, ...) never appears anywhere in the client bundle, and CORS
+ * simply doesn't apply since the browser only ever calls its own origin.
+ * Set NEXT_PUBLIC_RPC_URL to bypass the proxy and talk to an RPC directly
+ * from the browser instead (e.g. static export / no Node server available)
+ * - only do this with an endpoint that has no secret embedded in its URL.
  */
-const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || "https://bsc-rpc.publicnode.com";
+const rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || "/api/rpc";
 
 export const wagmiConfig = getDefaultConfig({
   appName: "Aave Arbitrage Executor",
