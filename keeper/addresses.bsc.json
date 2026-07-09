@@ -1,0 +1,27 @@
+{
+  "_readme": "BNB Chain (chainId 56) mainnet addresses, cross-checked via web search against BscScan and each protocol's own developer docs (Aave, PancakeSwap) in July 2026 - not pulled from memory. Do your own final check on bscscan.com before pointing real funds/keys at any of these, especially the Aave Pool address. Contracts can be upgraded behind proxies or migrated over time.",
+  "chainId": 56,
+  "aavePoolV3": "0x6807dc923806fE8Fd134338EABCA509979a7e0cB",
+  "tokens": {
+    "WBNB": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+    "USDT": "0x55d398326f99059fF775485246999027B3197955",
+    "USDC": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+  },
+  "pancakeswap": {
+    "v2Router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
+    "v3SmartRouter": "0x13f4EA83D0bd40E75C8222255bc855a974568Dd4",
+    "v3QuoterV2": "0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997"
+  },
+  "sources": [
+    "https://bscscan.com/address/0x6807dc923806fE8Fd134338EABCA509979a7e0cB (Aave V3: Pool Proxy)",
+    "https://aave.com/docs/aave-v3/smart-contracts/pool",
+    "https://developer.pancakeswap.finance/contracts/v2/addresses",
+    "https://developer.pancakeswap.finance/contracts/v3/addresses",
+    "https://bscscan.com/address/0x10ed43c718714eb63d5aa57b78b54704e256024e (PancakeSwap: Router v2)",
+    "https://bscscan.com/address/0x13f4EA83D0bd40E75C8222255bc855a974568Dd4 (PancakeSwap V3: Smart Router)",
+    "https://bscscan.com/address/0xb048bbc1ee6b733fffcfb9e9cef7375518e25997 (PancakeSwap: Quoter v2)",
+    "https://bscscan.com/token/0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c (WBNB)",
+    "https://bscscan.com/token/0x55d398326f99059ff775485246999027b3197955 (Binance-Peg BSC-USD / USDT)",
+    "https://bscscan.com/token/0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d (Binance-Peg USDC)"
+  ]
+}

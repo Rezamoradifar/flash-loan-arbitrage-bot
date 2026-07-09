@@ -1,44 +1,44 @@
 {
-  "_readme": "Copy to strategies.json and fill in REAL, VERIFIED addresses. Every 0x0000... below is a placeholder - the bot will simply fail calls against it, which is intentional: never ship a real address here that you have not independently verified on BscScan / the protocol's own docs. routerType: 0 = Uniswap-V2-style, 1 = Uniswap-V3-style (quoter+router), 2 = Curve/Ellipsis-style stable pool.",
+  "_readme": "Example triangular route using REAL, verified BNB Chain mainnet addresses (see addresses.bsc.json for sources). This is a STARTING POINT, not a guaranteed-profitable config: copy to strategies.json, then (1) confirm each PancakeSwap V2 pair below actually has liquidity on pancakeswap.finance before relying on it, (2) tune flashLoanAmount/minProfitOverride/slippageBpsOverride to your risk tolerance, (3) run with DRY_RUN=true first. routerType: 0 = Uniswap-V2-style, 1 = Uniswap-V3-style (quoter+router), 2 = Curve/Ellipsis-style stable pool.",
 
   "asset": {
     "symbol": "USDT",
-    "address": "0x0000000000000000000000000000000000dEaD",
+    "address": "0x55d398326f99059fF775485246999027B3197955",
     "flashLoanAmount": "1000000000000000000000"
   },
 
   "strategies": [
     {
-      "name": "triangular-usdt-tokx-toky",
+      "name": "triangular-usdt-wbnb-usdc-pancake-v2",
       "minProfitOverride": "0",
-      "slippageBpsOverride": 0,
+      "slippageBpsOverride": 50,
       "hops": [
         {
-          "router": "0x0000000000000000000000000000000000dEaD",
+          "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
           "quoter": "0x0000000000000000000000000000000000dEaD",
           "routerType": 0,
-          "tokenIn": "0x0000000000000000000000000000000000dEaD",
-          "tokenOut": "0x0000000000000000000000000000000000dEaD",
+          "tokenIn": "0x55d398326f99059fF775485246999027B3197955",
+          "tokenOut": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
           "v3Fee": 0,
           "stableI": 0,
           "stableJ": 0
         },
         {
-          "router": "0x0000000000000000000000000000000000dEaD",
+          "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
           "quoter": "0x0000000000000000000000000000000000dEaD",
           "routerType": 0,
-          "tokenIn": "0x0000000000000000000000000000000000dEaD",
-          "tokenOut": "0x0000000000000000000000000000000000dEaD",
+          "tokenIn": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+          "tokenOut": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
           "v3Fee": 0,
           "stableI": 0,
           "stableJ": 0
         },
         {
-          "router": "0x0000000000000000000000000000000000dEaD",
+          "router": "0x10ED43C718714eb63d5aA57B78B54704E256024E",
           "quoter": "0x0000000000000000000000000000000000dEaD",
           "routerType": 0,
-          "tokenIn": "0x0000000000000000000000000000000000dEaD",
-          "tokenOut": "0x0000000000000000000000000000000000dEaD",
+          "tokenIn": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+          "tokenOut": "0x55d398326f99059fF775485246999027B3197955",
           "v3Fee": 0,
           "stableI": 0,
           "stableJ": 0

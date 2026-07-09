@@ -28,11 +28,12 @@ forge script script/DeployLocalDemo.s.sol:DeployLocalDemo \
   --broadcast
 ```
 
-نکته مهم: هیچ آدرس واقعی Aave/PancakeSwap در کد نیست (عمداً) — چون یک آدرس اشتباه در رباتی که وام
-واقعی می‌گیرد می‌تواند فاجعه‌بار باشد. برای اجرای واقعی روی BSC باید خودتان آدرس‌های تأییدشده را از
-سایت رسمی Aave و BscScan پیدا کنید (بخش "Deploying against a real Aave V3 pool" پایین همین فایل).
-هیچ ربات آربیتراژی سود را تضمین نمی‌کند — این کد فقط زمانی واقعاً وام می‌گیرد که سودآوری را خودش
-روی چین چک کرده و تأیید کرده باشد؛ در غیر این صورت تراکنش قبل از گرفتن وام revert می‌شود.
+آدرس‌های واقعی BSC (Aave Pool، روترهای PancakeSwap، توکن‌ها) داخل `keeper/addresses.bsc.json` و
+`keeper/strategies.example.json` هستند — از چند منبع مستقل (BscScan + مستندات رسمی Aave/PancakeSwap)
+چک شده‌اند، نه فقط از حافظه. با این حال قبل از هر تراکنش واقعی با پول واقعی، خودتان هم یک بار روی
+bscscan.com چک‌شان کنید. هیچ ربات آربیتراژی سود را تضمین نمی‌کند — این کد فقط زمانی واقعاً وام
+می‌گیرد که سودآوری را خودش روی چین چک کرده و تأیید کرده باشد؛ در غیر این صورت تراکنش قبل از گرفتن
+وام revert می‌شود.
 
 ---
 
@@ -118,7 +119,8 @@ flash-arb/
 │   └── DeployLocalDemo.s.sol         # deploy + run one full arbitrage against local mocks
 ├── keeper/                           # off-chain TypeScript bot (ethers.js)
 │   ├── src/index.ts                  # poll loop: quote → decide → execute
-│   ├── strategies.example.json       # route templates (PLACEHOLDER addresses — see below)
+│   ├── strategies.example.json       # route template using verified BSC addresses — see below
+│   ├── addresses.bsc.json            # verified BSC contract/token addresses + sources
 │   └── .env.example
 └── foundry.toml
 ```
@@ -236,20 +238,26 @@ quoted net profit clears your configured threshold. `executeArbitrage()` re-veri
 on-chain in the same transaction before borrowing, so a stale off-chain quote just reverts
 harmlessly (loan never taken) rather than losing funds.
 
-## About the addresses in `strategies.example.json`
+## Verified BSC addresses (`keeper/addresses.bsc.json`)
 
-They're all `0x000...dEaD` placeholders on purpose. **No real Aave/PancakeSwap/BSC contract
-addresses are hardcoded anywhere in this bot.** For something that borrows and moves real money, a
-single wrong or stale contract address is a catastrophic, silent failure mode — worse than the bot
-simply not running. Get every address yourself, freshly, from:
+`keeper/strategies.example.json` now ships a real triangular route (USDT → WBNB → USDC → USDT via
+PancakeSwap V2) using addresses cross-checked against BscScan and each protocol's own developer
+docs — not pulled from memory. See `keeper/addresses.bsc.json` for the full list and sources:
 
-- Aave's own documentation site (aave.com) for the current Pool address on your target chain.
-- The DEX's own documentation (e.g. pancakeswap.finance) for router/quoter addresses.
-- Cross-check whatever you find against BscScan (bscscan.com) — confirm it's a verified contract
-  with the expected interface before whitelisting it.
+| Contract | Address |
+|---|---|
+| Aave V3 Pool (BSC) | `0x6807dc923806fE8Fd134338EABCA509979a7e0cB` |
+| PancakeSwap V2 Router | `0x10ED43C718714eb63d5aA57B78B54704E256024E` |
+| PancakeSwap V3 Smart Router | `0x13f4EA83D0bd40E75C8222255bc855a974568Dd4` |
+| PancakeSwap V3 QuoterV2 | `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
+| WBNB | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` |
+| USDT (BSC-USD) | `0x55d398326f99059fF775485246999027B3197955` |
+| USDC | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` |
 
-Do not copy addresses from a random blog post, tutorial, or an AI's memory — verify from the
-protocol's own source every time, especially before pointing an automated key at it.
+Even so, for something that borrows and moves real money, **do your own final check on
+bscscan.com** before pointing real funds/keys at any of these — contracts can be upgraded behind
+proxies, and this list can go stale. Don't extend it with addresses from a random blog post or
+tutorial without the same cross-checking.
 
 ## Security reminders
 
