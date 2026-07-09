@@ -91,6 +91,10 @@ export const config = {
   dryRun,
   minNetProfit: BigInt(process.env.MIN_NET_PROFIT ?? "0"),
   slippageBps: Number(process.env.SLIPPAGE_BPS ?? 0),
+  // Read-only HTTP API for a frontend to poll (see api.ts). Unset = disabled
+  // entirely, no server starts, no new attack surface. Only meaningful in
+  // dynamic mode - static mode has no ranked opportunity list to expose.
+  apiPort: process.env.API_PORT ? Number(process.env.API_PORT) : undefined,
 };
 
 export function loadStrategies(): StrategiesFile {

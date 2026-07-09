@@ -268,6 +268,34 @@ configured threshold. `executeArbitrage()` re-verifies profitability on-chain in
 transaction before borrowing, so a stale off-chain quote just reverts harmlessly (loan never taken)
 rather than losing funds.
 
+### Running the frontend
+
+The `frontend/` directory is a Next.js 15/React 19 dashboard (institutional black/gold design,
+RainbowKit multi-wallet connect, live dashboard, owner-only admin panel covering every contract
+function, on-chain-event-driven analytics/transactions pages) that talks directly to the deployed
+contract and, optionally, the keeper's read-only API above.
+
+**Local dev:**
+
+```bash
+cd frontend
+npm install
+cp .env.example .env.local     # optional: override contract/RPC/keeper API - has working defaults
+npm run dev                    # http://localhost:3000
+```
+
+**Everything together with Docker Compose** (frontend + keeper + nginx reverse proxy):
+
+```bash
+cp .env.example .env           # frontend build-time config (repo root)
+cp keeper/.env.example keeper/.env   # fill in RPC_URL at minimum; DRY_RUN=true by default
+docker compose up --build      # serves on http://localhost:80
+```
+
+nginx proxies `/` to the frontend and `/keeper-api/` to the keeper's read-only monitoring API
+(status/opportunities/metrics) - the keeper's `PRIVATE_KEY` never leaves its own container, and
+that API is GET-only by construction (see `keeper/src/api.ts`).
+
 ## Verified BSC addresses (`keeper/addresses.bsc.json`)
 
 Addresses cross-checked against BscScan and each protocol's own developer docs — not pulled from

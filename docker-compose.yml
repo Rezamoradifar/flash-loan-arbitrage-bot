@@ -1,0 +1,39 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_CONTRACT_ADDRESS: ${NEXT_PUBLIC_CONTRACT_ADDRESS:-}
+        NEXT_PUBLIC_RPC_URL: ${NEXT_PUBLIC_RPC_URL:-}
+        # Points at nginx's proxied path by default so the browser never
+        # needs the keeper's internal Docker-network address directly.
+        NEXT_PUBLIC_KEEPER_API_URL: ${NEXT_PUBLIC_KEEPER_API_URL:-/keeper-api}
+        NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID: ${NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID:-}
+        NEXT_PUBLIC_EVENTS_LOOKBACK_BLOCKS: ${NEXT_PUBLIC_EVENTS_LOOKBACK_BLOCKS:-5000}
+    restart: unless-stopped
+    expose:
+      - "3000"
+
+  keeper:
+    build:
+      context: ./keeper
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./keeper/.env
+    environment:
+      API_PORT: "4001"
+    expose:
+      - "4001"
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - frontend
+      - keeper
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro

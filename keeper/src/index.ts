@@ -2,6 +2,7 @@ import { Contract, JsonRpcProvider, Wallet } from "ethers";
 import { EXECUTOR_ABI } from "./abi.js";
 import { config } from "./config.js";
 import { runKeeper } from "./keeper.js";
+import { startApiServer } from "./api.js";
 
 /**
  * Entry point only: wires up the provider/wallet/contract, verifies the
@@ -50,6 +51,17 @@ async function main() {
     throw new Error("PRIVATE_KEY and EXECUTOR_ADDRESS are both required when DRY_RUN=false.");
   } else {
     console.log("Simulate-only mode: no on-chain authorization check to run (no wallet and/or no executor configured).");
+  }
+
+  if (config.apiPort) {
+    startApiServer(config.apiPort, () => ({
+      chainId: network.chainId.toString(),
+      keeperAddress: wallet?.address ?? null,
+      executorAddress: config.executorAddress ?? null,
+      scanMode: config.scanMode,
+      triggerMode: config.triggerMode,
+      dryRun: config.dryRun,
+    }));
   }
 
   await runKeeper(executor, provider);

@@ -2,6 +2,7 @@ import { Contract, JsonRpcProvider } from "ethers";
 import { config, loadRoutesConfig, loadStrategies, type StrategyConfig } from "./config.js";
 import { Metrics } from "./metrics.js";
 import { hopTuple, runScanCycle, type Opportunity } from "./scanner.js";
+import { recordScanResult } from "./api.js";
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -147,7 +148,9 @@ async function runDynamicMode(executor: Contract | null, provider: JsonRpcProvid
   const metrics = new Metrics();
 
   await runWithTrigger(provider, async () => {
+    const started = Date.now();
     const opportunities = await runScanCycle(executor, provider, cfg, probes, metrics);
+    recordScanResult(opportunities, Date.now() - started, metrics);
 
     // executeArbitrage has an on-chain same-block replay guard, so only one
     // execution can land per block regardless - submit just the single best
