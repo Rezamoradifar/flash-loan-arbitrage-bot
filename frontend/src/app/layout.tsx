@@ -5,6 +5,7 @@ import { Providers } from "@/components/providers";
 import { Navbar } from "@/components/layout/navbar";
 import { Footer } from "@/components/layout/footer";
 import { ServiceWorkerRegister } from "@/components/sw-register";
+import { RpcHealthBanner } from "@/components/layout/rpc-health-banner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -41,6 +42,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         <Providers>
           <ServiceWorkerRegister />
+          <RpcHealthBanner />
           <Navbar />
           <main className="flex-1">{children}</main>
           <Footer />

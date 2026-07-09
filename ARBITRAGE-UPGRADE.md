@@ -322,3 +322,61 @@ zero-padded `address(0)` (which is checksum-invariant and also matches the conve
 contract's own tests already use for "unused" fields) in `routes.ts` and `strategies.example.json`.
 This is exactly the kind of bug that only surfaces by actually executing the code path, not by
 reading it — worth internalizing as a reason the local-Anvil smoke test loop exists at all.
+
+## 15. Frontend debugging pass: two real hang/silent-failure bugs found via live testing
+
+A user report ("most dashboard pages never finish loading, contract data is not displayed") led to
+a full audit of every data-fetching hook in `frontend/`. As with §14, this was verified against a
+real local Anvil deployment (not just code review), which is what surfaced the second bug below -
+neither `tsc` nor `next build` catches either of these.
+
+**Bug 1 - infinite loading, `useContractEvents.ts` / `useAnalyticsHistory.ts`.** Both hooks gated
+their entire fetch effect on a *separate* `useBlockNumber()` hook's `data`:
+`if (!publicClient || !currentBlock || fetchedRef.current) return;`. If that separate query's RPC
+call fails (bad endpoint, rate limit, CORS), TanStack Query exhausts its retries and settles into a
+permanent error state - `data` stays `undefined` forever, and without `watch: true` it never
+automatically retries again. The gated effect above then never runs, so `loading` (initialized
+`true`) never becomes `false` - the exact "Analytics stays loading" / "stuck forever" symptom
+reported, with no error ever surfaced. Fixed by removing the cross-hook dependency entirely: each
+hook now calls `publicClient.getBlockNumber()` itself, inline, inside the same `try/catch` as
+everything else, wrapped in an explicit timeout (`src/lib/rpcUtils.ts`'s `withTimeout`) and with
+concurrency-limited (`mapWithConcurrency`) chunked RPC calls instead of unbounded `Promise.all`
+bursts that free-tier RPC providers commonly rate-limit.
+
+**Bug 2 - silently missing contract data, wagmi's default multicall batching.** Even after fixing
+the hang, a live test showed `owner`/`keeper`/`profitRecipient` reads (`ContractInfoCard`,
+`CurrentConfigCard`) resolving to `undefined` - not loading, not erroring, just permanently blank -
+while raw `publicClient` calls (block number, gas price, event logs) worked fine. Tracing the actual
+RPC traffic showed wagmi's default behavior (`batch.multicall: true`) silently aggregating every
+`useReadContract`/`useReadContracts` call in the same render tick into one `eth_call` to the
+Multicall3 contract (`0xcA11bde05977b3631167028862bE2a173976CA11`). A fresh/non-forked local Anvil
+chain doesn't have Multicall3 deployed there, so that call returns an empty `"0x"` result - which
+viem/wagmi treats as "no data" for every batched read at once, with zero error surfaced anywhere.
+Real BSC mainnet does have Multicall3 at the canonical address, so this exact failure mode is less
+likely there, but the same silent-blank behavior can plausibly occur against any RPC endpoint that
+doesn't proxy calls to that one contract correctly (some private/custom nodes, certain rate-limited
+proxies). Fixed by setting `batch: { multicall: false }` in `wagmiConfig.ts` - every read becomes an
+independent `eth_call`, trading a few extra parallel requests per page for "every read failure mode
+is a real, visible error" instead of "some reads just silently don't show up."
+
+**Supporting hardening**, same pass:
+- `wagmiConfig.ts`: default RPC fallback switched from viem's baked-in `bsc-dataseed.binance.org`
+  (known CORS/reliability issues for direct browser requests) to PublicNode's `bsc-rpc.publicnode.com`
+  when `NEXT_PUBLIC_RPC_URL` is unset; explicit `http()` `timeout`/`retryCount`/`retryDelay`; fixed a
+  malformed (34-char, not 32-hex) placeholder WalletConnect project ID.
+- `providers.tsx`: global `QueryClient` now sets bounded `retry`/`retryDelay` instead of relying on
+  library defaults, so a failing read surfaces an error in seconds, not tens of seconds.
+- `useKeeperApi.ts`: `fetch()` calls to the keeper's API wrapped in an `AbortController` timeout -
+  native `fetch` has no default timeout, so an unreachable keeper host could otherwise hang that
+  query indefinitely too.
+- New `useRpcHealth` hook + `RpcHealthBanner` component: one direct connectivity probe surfaced as a
+  single honest banner ("can't reach your RPC") instead of a dozen silent per-card blanks when the
+  configured endpoint is down.
+
+**Verification method**: deployed the real `AaveArbitrageExecutorV3` (via `DeployLocalDemo.s.sol`,
+which also executes one real arbitrage operation end-to-end) to a live local Anvil chain, pointed
+the frontend at it, and confirmed via Playwright screenshots that Dashboard/Analytics/Transactions
+all populate with real data (owner/keeper addresses, operation counts, event timeline, profit/gas/
+router charts, transaction table) - then repeated against a deliberately unreachable RPC URL and
+confirmed every page resolves to a clear error state (banner + in-page message) within ~3.5 seconds
+instead of hanging.

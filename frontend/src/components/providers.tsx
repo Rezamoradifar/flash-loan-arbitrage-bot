@@ -30,9 +30,23 @@ function RainbowKitThemed({ children }: { children: React.ReactNode }) {
 }
 
 export function Providers({ children }: { children: React.ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient({
-    defaultOptions: { queries: { staleTime: 5_000, refetchOnWindowFocus: false } },
-  }));
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: {
+            staleTime: 5_000,
+            refetchOnWindowFocus: false,
+            // Bounded retries with a capped backoff - the wagmi/viem default
+            // retry behavior otherwise compounds with our own transport-level
+            // retries and can leave a failed read "loading" for a long time
+            // before finally surfacing an error.
+            retry: 2,
+            retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 8_000),
+          },
+        },
+      })
+  );
 
   return (
     <WagmiProvider config={wagmiConfig}>

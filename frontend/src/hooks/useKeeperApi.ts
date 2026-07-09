@@ -30,10 +30,22 @@ export interface KeeperOpportunities {
   opportunities: KeeperOpportunity[];
 }
 
+const FETCH_TIMEOUT_MS = 8_000;
+
+/** Native fetch() has no default timeout - an unreachable/hanging keeper
+ *  host would otherwise stall this query (and the card that renders it)
+ *  indefinitely instead of failing into the isError state these queries
+ *  already handle. */
 async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${KEEPER_API_URL}${path}`);
-  if (!res.ok) throw new Error(`Keeper API ${path} returned ${res.status}`);
-  return res.json() as Promise<T>;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${KEEPER_API_URL}${path}`, { signal: controller.signal });
+    if (!res.ok) throw new Error(`Keeper API ${path} returned ${res.status}`);
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Reads the keeper's own read-only monitoring API (see keeper/src/api.ts).

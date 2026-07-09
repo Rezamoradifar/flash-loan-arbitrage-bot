@@ -1,12 +1,16 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { usePublicClient, useBlockNumber } from "wagmi";
+import { usePublicClient } from "wagmi";
 import { CONTRACT_ADDRESS, KNOWN_ASSETS, labelAsset } from "@/lib/contract";
+import { withTimeout, mapWithConcurrency } from "@/lib/rpcUtils";
 
 const LOOKBACK_BLOCKS = BigInt(process.env.NEXT_PUBLIC_EVENTS_LOOKBACK_BLOCKS ?? "5000");
 const CHUNK_SIZE = 2000n;
 const MAX_RECEIPT_FETCHES = 120;
+const FETCH_TIMEOUT_MS = 30_000;
+const CHUNK_CONCURRENCY = 4;
+const DETAIL_CONCURRENCY = 8;
 
 export interface ExecutionRecord {
   txHash: string;
@@ -74,10 +78,16 @@ const flashLoanStartedEvent = {
  *  FlashLoanStarted (loan count) logs over a bounded lookback window, then
  *  resolves block timestamps and transaction gas cost for each execution.
  *  Nothing here is estimated or fabricated - if the contract hasn't emitted
- *  an event, it doesn't appear in any chart. */
+ *  an event, it doesn't appear in any chart.
+ *
+ *  Deliberately does NOT gate on a separate useBlockNumber() hook's `data`
+ *  (see useContractEvents.ts for why that hangs forever on RPC failure) -
+ *  the current block is fetched in-line inside the same try/catch as
+ *  everything else, and concurrency-limited + timeout-wrapped so a
+ *  rate-limited free RPC fails fast with a visible error instead of
+ *  silently stalling the whole page. */
 export function useAnalyticsHistory(): AnalyticsData {
   const publicClient = usePublicClient();
-  const { data: currentBlock } = useBlockNumber();
   const [state, setState] = useState<Omit<AnalyticsData, "loading" | "error">>({
     executions: [],
     swaps: [],
@@ -88,11 +98,13 @@ export function useAnalyticsHistory(): AnalyticsData {
   const fetchedRef = useRef(false);
 
   useEffect(() => {
-    if (!publicClient || !currentBlock || fetchedRef.current) return;
+    if (!publicClient || fetchedRef.current) return;
     fetchedRef.current = true;
 
     (async () => {
       try {
+        const currentBlock = await withTimeout(publicClient.getBlockNumber(), FETCH_TIMEOUT_MS, "getBlockNumber");
+
         const fromBlock = currentBlock > LOOKBACK_BLOCKS ? currentBlock - LOOKBACK_BLOCKS : 0n;
         const ranges: Array<[bigint, bigint]> = [];
         for (let start = fromBlock; start <= currentBlock; start += CHUNK_SIZE) {
@@ -100,51 +112,44 @@ export function useAnalyticsHistory(): AnalyticsData {
           ranges.push([start, end]);
         }
 
-        const [execLogs, swapLogs, flashLogs] = await Promise.all([
-          Promise.all(
-            ranges.map(([from, to]) =>
-              publicClient.getLogs({ address: CONTRACT_ADDRESS, event: arbitrageExecutedEvent, fromBlock: from, toBlock: to })
-            )
-          ).then((r) => r.flat()),
-          Promise.all(
-            ranges.map(([from, to]) =>
-              publicClient.getLogs({ address: CONTRACT_ADDRESS, event: swapExecutedEvent, fromBlock: from, toBlock: to })
-            )
-          ).then((r) => r.flat()),
-          Promise.all(
-            ranges.map(([from, to]) =>
-              publicClient.getLogs({ address: CONTRACT_ADDRESS, event: flashLoanStartedEvent, fromBlock: from, toBlock: to })
-            )
-          ).then((r) => r.flat()),
-        ]);
+        const fetchEventLogs = (event: typeof arbitrageExecutedEvent | typeof swapExecutedEvent | typeof flashLoanStartedEvent) =>
+          mapWithConcurrency(ranges, CHUNK_CONCURRENCY, ([from, to]) =>
+            publicClient.getLogs({ address: CONTRACT_ADDRESS, event, fromBlock: from, toBlock: to })
+          ).then((r) => r.flat());
+
+        const [execLogs, swapLogs, flashLogs] = await withTimeout(
+          Promise.all([
+            fetchEventLogs(arbitrageExecutedEvent),
+            fetchEventLogs(swapExecutedEvent),
+            fetchEventLogs(flashLoanStartedEvent),
+          ]),
+          FETCH_TIMEOUT_MS,
+          "getLogs"
+        );
 
         const uniqueBlocks = Array.from(new Set(execLogs.map((l) => l.blockNumber))).slice(0, MAX_RECEIPT_FETCHES);
         const blockTimestamps = new Map<bigint, number>();
-        await Promise.all(
-          uniqueBlocks.map(async (bn) => {
-            if (bn === null) return;
-            try {
-              const block = await publicClient.getBlock({ blockNumber: bn });
-              blockTimestamps.set(bn, Number(block.timestamp) * 1000);
-            } catch {
-              /* best-effort - chart falls back to block number ordering */
-            }
-          })
-        );
+        await mapWithConcurrency(uniqueBlocks, DETAIL_CONCURRENCY, async (bn) => {
+          if (bn === null) return;
+          try {
+            const block = await publicClient.getBlock({ blockNumber: bn });
+            blockTimestamps.set(bn, Number(block.timestamp) * 1000);
+          } catch {
+            /* best-effort - chart falls back to block number ordering */
+          }
+        });
 
         const receiptTargets = execLogs.slice(0, MAX_RECEIPT_FETCHES);
         const gasByTx = new Map<string, bigint>();
-        await Promise.all(
-          receiptTargets.map(async (log) => {
-            if (!log.transactionHash) return;
-            try {
-              const receipt = await publicClient.getTransactionReceipt({ hash: log.transactionHash });
-              gasByTx.set(log.transactionHash, receipt.gasUsed * receipt.effectiveGasPrice);
-            } catch {
-              /* best-effort */
-            }
-          })
-        );
+        await mapWithConcurrency(receiptTargets, DETAIL_CONCURRENCY, async (log) => {
+          if (!log.transactionHash) return;
+          try {
+            const receipt = await publicClient.getTransactionReceipt({ hash: log.transactionHash });
+            gasByTx.set(log.transactionHash, receipt.gasUsed * receipt.effectiveGasPrice);
+          } catch {
+            /* best-effort */
+          }
+        });
 
         const executions: ExecutionRecord[] = execLogs.map((log) => {
           const args = log.args as {
@@ -180,7 +185,7 @@ export function useAnalyticsHistory(): AnalyticsData {
         setLoading(false);
       }
     })();
-  }, [publicClient, currentBlock]);
+  }, [publicClient]);
 
   return { ...state, loading, error };
 }
