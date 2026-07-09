@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
+import type { RouterInfo, TokenInfo } from "./routes.js";
 
 export interface HopConfig {
   router: string;
@@ -30,11 +31,32 @@ function requireEnv(name: string): string {
   return v;
 }
 
+export interface RoutesConfigFile {
+  wrappedNative: TokenInfo;
+  baseAssets: TokenInfo[];
+  intermediateTokens: TokenInfo[];
+  routers: RouterInfo[];
+  probeAmountByAssetAddress: Record<string, string>;
+  gasUnitsPerTrade: number;
+  /** Extra haircut applied to a route's quoted output before comparing to
+   *  costs, on top of the on-chain execution slippage tolerance - accounts
+   *  for the fact that a quote can move between when it's fetched and when
+   *  the transaction actually lands. */
+  slippageBufferBps: number;
+  /** Passed as executeArbitrage's on-chain slippageBPS (amountOutMin tolerance per hop). */
+  executionSlippageBps: number;
+  minProfitByAssetAddress: Record<string, string>;
+}
+
 export const config = {
   rpcUrl: requireEnv("RPC_URL"),
   privateKey: requireEnv("PRIVATE_KEY"),
   executorAddress: requireEnv("EXECUTOR_ADDRESS"),
+  // "dynamic" = multi-DEX/multi-asset/multi-hop auto-scanner (routes.config.json).
+  // "static" = fixed hand-authored routes (strategies.json), for a known-good route.
+  scanMode: (process.env.SCAN_MODE ?? "dynamic").toLowerCase(),
   strategiesFile: process.env.STRATEGIES_FILE ?? "./strategies.json",
+  routesConfigFile: process.env.ROUTES_CONFIG_FILE ?? "./routes.config.json",
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 6000),
   dryRun: (process.env.DRY_RUN ?? "true").toLowerCase() !== "false",
   minNetProfit: BigInt(process.env.MIN_NET_PROFIT ?? "0"),
@@ -46,6 +68,15 @@ export function loadStrategies(): StrategiesFile {
   const parsed = JSON.parse(raw) as StrategiesFile;
   if (!parsed.strategies?.length) {
     throw new Error(`No strategies found in ${config.strategiesFile}`);
+  }
+  return parsed;
+}
+
+export function loadRoutesConfig(): RoutesConfigFile {
+  const raw = readFileSync(config.routesConfigFile, "utf-8");
+  const parsed = JSON.parse(raw) as RoutesConfigFile;
+  if (!parsed.baseAssets?.length || !parsed.routers?.length) {
+    throw new Error(`Invalid or empty routes config in ${config.routesConfigFile}`);
   }
   return parsed;
 }

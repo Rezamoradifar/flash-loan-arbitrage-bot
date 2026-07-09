@@ -170,7 +170,11 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     ///         touch whitelists, caps, fees, pause, or withdrawals — those
     ///         remain onlyOwner. address(0) = no keeper set (owner-only).
     address public keeper;
-    uint256 public minProfitThreshold;      // in the borrowed asset's smallest unit
+    /// @notice Global fallback threshold, in the borrowed asset's smallest
+    ///         unit. Only meaningful on its own for a single-asset deployment
+    ///         — see minProfitThresholdPerAsset below for why multi-asset
+    ///         deployments need a per-asset value instead.
+    uint256 public minProfitThreshold;
     uint16 public minSpreadBPS;
     uint16 public defaultSlippageBPS;
     uint32 public deadlineWindow;
@@ -190,6 +194,20 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     mapping(address => bool) public allowedRouters;
     mapping(address => bool) public allowedAssets;
     mapping(address => uint256) public maxFlashLoanPerAsset; // 0 = use maxFlashLoanAmount fallback, still 0 = unlimited if both 0
+
+    /// @notice Per-asset minimum gross profit, in that asset's own smallest
+    ///         unit. 0 = fall back to the global minProfitThreshold.
+    /// @dev Why this exists: minProfitThreshold alone is a single raw uint256
+    ///      compared directly against grossProfit regardless of which asset
+    ///      was borrowed. That's fine for a single-asset (e.g. USDT-only)
+    ///      deployment, but silently wrong across multiple base assets of
+    ///      very different value-per-unit and decimals — e.g. a threshold of
+    ///      10e18 is a sensible "$10 minimum" for 18-decimal USDT, but the
+    ///      same raw value is a ~$5,500+ minimum for 18-decimal WBNB and an
+    ///      absurdly tiny fraction of a cent for 18-decimal BTCB. Multi-asset
+    ///      scanning (executeArbitrage can borrow USDT, USDC, WBNB, BTCB,
+    ///      etc. interchangeably) needs a threshold tuned per asset.
+    mapping(address => uint256) public minProfitThresholdPerAsset;
 
     /// @notice Chainlink-compatible USD price feed per token (e.g. Chainlink's
     ///         real BNB/USD, USDT/USD feeds on BSC). address(0) = no feed set,
@@ -232,6 +250,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     event ProfitRecipientUpdated(address indexed newRecipient);
     event WithdrawalRequested(bytes32 indexed requestId, address indexed token, uint256 amount);
     event KeeperUpdated(address indexed newKeeper);
+    event AssetMinProfitThresholdUpdated(address indexed asset, uint256 threshold);
 
     // ============================================================
     // Errors
@@ -390,6 +409,16 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     function setMinProfitThreshold(uint256 newThreshold) external onlyOwner {
         minProfitThreshold = newThreshold;
         emit ConfigUpdated("minProfitThreshold", newThreshold);
+    }
+
+    /// @notice Sets the minimum gross profit required for `asset` specifically
+    ///         (0 = fall back to the global minProfitThreshold). Required for
+    ///         sane multi-asset thresholds — see minProfitThresholdPerAsset's
+    ///         docs above.
+    function setMinProfitThresholdForAsset(address asset, uint256 newThreshold) external onlyOwner {
+        if (asset == address(0)) revert ZeroAddress();
+        minProfitThresholdPerAsset[asset] = newThreshold;
+        emit AssetMinProfitThresholdUpdated(asset, newThreshold);
     }
 
     function setMinSpreadBPS(uint16 newSpreadBPS) external onlyOwner {
@@ -587,7 +616,7 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         if (steps[0].tokenIn != asset) revert CycleMismatch();
         if (steps[len - 1].tokenOut != asset) revert CycleMismatch();
 
-        for (uint256 i = 0; i < len; i++) {
+        for (uint256 i = 0; i < len;) {
             SwapStep calldata s = steps[i];
             if (s.router == address(0) || s.tokenIn == address(0) || s.tokenOut == address(0)) revert ZeroAddress();
             if (s.tokenIn == s.tokenOut) revert DuplicateHop();
@@ -596,6 +625,10 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
             if (s.routerType == ROUTER_TYPE_STABLE && s.stableI == s.stableJ) revert InvalidStep();
             if (s.routerType > ROUTER_TYPE_STABLE) revert InvalidStep();
             if (i > 0 && steps[i - 1].tokenOut != s.tokenIn) revert CycleMismatch();
+            // Safe: len is capped at MAX_STEPS (3), can never overflow.
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -633,8 +666,13 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
     function _runSwapCycle(SwapStep[] memory steps, uint256 amount, uint16 slippageBPS) internal {
         uint256 deadline = block.timestamp + deadlineWindow;
         uint256 runningAmount = amount;
-        for (uint256 i = 0; i < steps.length; i++) {
+        uint256 len = steps.length; // cache: avoids re-reading array length each iteration
+        for (uint256 i = 0; i < len;) {
             runningAmount = _executeSwap(steps[i], runningAmount, slippageBPS, deadline);
+            // Safe: len is capped at MAX_STEPS (3), can never overflow.
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -649,7 +687,10 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
 
         if (balanceAfter < requiredBalance) revert ArbProfitBelowThreshold();
         uint256 grossProfit = balanceAfter - requiredBalance;
-        if (grossProfit < minProfit || grossProfit < minProfitThreshold) revert ArbProfitBelowThreshold();
+
+        uint256 effectiveThreshold =
+            minProfitThresholdPerAsset[asset] != 0 ? minProfitThresholdPerAsset[asset] : minProfitThreshold;
+        if (grossProfit < minProfit || grossProfit < effectiveThreshold) revert ArbProfitBelowThreshold();
 
         uint256 fee = (grossProfit * protocolFeeBPS) / BPS_DENOMINATOR;
         uint256 netProfit = grossProfit - fee;
@@ -799,11 +840,16 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         return estimatedGasUnits * tx.gasprice;
     }
 
-    /// @notice Net profit estimate in the borrowed asset, ignoring gas (gas is
-    ///         paid in BNB, not directly comparable without a price feed — a
-    ///         bot should convert estimateGasCost() to `asset` terms itself).
+    /// @notice Net profit estimate in the borrowed asset, after the flash-loan
+    ///         premium, swap fees (already baked into each hop's DEX quote —
+    ///         getAmountsOut/quoteExactInputSingle/get_dy all return amounts
+    ///         net of pool fees) and protocolFeeBPS, but before gas — gas is
+    ///         paid in BNB, not directly comparable without a price feed; see
+    ///         expectedNetProfitAfterGas() below for the gas-aware version.
+    ///         public (not just external) so expectedNetProfitAfterGas() can
+    ///         reuse it internally without an extra external call.
     function expectedNetProfit(address asset, uint256 amount, SwapStep[] calldata steps)
-        external
+        public
         returns (uint256 netProfit)
     {
         uint256 grossOut = _quoteCycle(steps, amount);
@@ -813,6 +859,67 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         uint256 grossProfit = grossOut - totalOwed;
         uint256 protocolCut = (grossProfit * protocolFeeBPS) / BPS_DENOMINATOR;
         netProfit = grossProfit - protocolCut;
+    }
+
+    /// @notice Converts a gas cost (gasUnits * gasPriceWei, in native wei) into
+    ///         `asset`'s smallest units, using the Chainlink USD feeds already
+    ///         configured via setPriceFeed() for `wrappedNative` (e.g. WBNB)
+    ///         and `asset`. Returns 0 if either feed isn't set — callers
+    ///         (typically the off-chain keeper) should treat 0 as "unknown,
+    ///         apply your own off-chain gas estimate" rather than "free".
+    /// @dev gasPriceWei is an explicit parameter rather than reading
+    ///      tx.gasprice, unlike estimateGasCost() above: this function is
+    ///      meant to be called via eth_call from a bot that already knows the
+    ///      real-time gas price it intends to use, and eth_call defaults
+    ///      gasPrice to 0 unless the caller explicitly overrides it — an
+    ///      implicit tx.gasprice read here would silently return 0 for any
+    ///      bot that forgets to set that override.
+    function estimateGasCostInAsset(address asset, address wrappedNative, uint256 gasUnits, uint256 gasPriceWei)
+        public
+        view
+        returns (uint256 gasCostInAsset)
+    {
+        address nativeFeed = priceFeeds[wrappedNative];
+        address assetFeed = priceFeeds[asset];
+        if (nativeFeed == address(0) || assetFeed == address(0)) return 0;
+
+        (int256 nativePrice, uint8 nativeFeedDec) = _requireFreshPositivePrice(nativeFeed);
+        (int256 assetPrice, uint8 assetFeedDec) = _requireFreshPositivePrice(assetFeed);
+
+        // Price of 1 whole native token in whole `asset` units, 1e18 fixed-point
+        // (same normalization pattern as _checkOracleSanity's oracleRateWad).
+        uint256 rateWad = Math.mulDiv(
+            uint256(nativePrice) * (10 ** assetFeedDec),
+            1e18,
+            uint256(assetPrice) * (10 ** nativeFeedDec)
+        );
+
+        uint256 gasCostNativeWei = gasUnits * gasPriceWei; // native token assumed 18 decimals (true for BNB/WBNB)
+        uint256 gasCostAssetWad = Math.mulDiv(gasCostNativeWei, rateWad, 1e18);
+
+        uint8 assetDec = IERC20Decimals(asset).decimals();
+        gasCostInAsset =
+            assetDec <= 18 ? gasCostAssetWad / (10 ** (18 - assetDec)) : gasCostAssetWad * (10 ** (assetDec - 18));
+    }
+
+    /// @notice expectedNetProfit() minus the gas cost (converted to `asset`
+    ///         terms via estimateGasCostInAsset()). Signed so a genuinely
+    ///         unprofitable-after-gas trade is directly visible as a negative
+    ///         number rather than silently clamping to 0. If either price
+    ///         feed isn't configured, gas cost is treated as 0 here — a bot
+    ///         should check estimateGasCostInAsset() separately and fall back
+    ///         to its own off-chain gas accounting when it returns 0.
+    function expectedNetProfitAfterGas(
+        address asset,
+        uint256 amount,
+        SwapStep[] calldata steps,
+        address wrappedNative,
+        uint256 gasUnits,
+        uint256 gasPriceWei
+    ) external returns (int256 netProfitAfterGas) {
+        uint256 netProfit = expectedNetProfit(asset, amount, steps);
+        uint256 gasCost = estimateGasCostInAsset(asset, wrappedNative, gasUnits, gasPriceWei);
+        netProfitAfterGas = int256(netProfit) - int256(gasCost);
     }
 
     /// @notice Compares multiple whitelisted V2-style routers for the same
@@ -828,39 +935,58 @@ contract AaveArbitrageExecutorV3 is ReentrancyGuard, Ownable, Pausable {
         path[0] = tokenIn;
         path[1] = tokenOut;
 
-        for (uint256 i = 0; i < routers.length; i++) {
-            if (!allowedRouters[routers[i]]) continue;
-            try IRouterV2(routers[i]).getAmountsOut(amountIn, path) returns (uint256[] memory amounts) {
-                uint256 out = amounts[amounts.length - 1];
-                if (out > bestOut) {
-                    bestOut = out;
-                    bestIndex = i;
+        uint256 len = routers.length; // cache: avoids re-reading calldata length each iteration
+        for (uint256 i = 0; i < len;) {
+            if (allowedRouters[routers[i]]) {
+                try IRouterV2(routers[i]).getAmountsOut(amountIn, path) returns (uint256[] memory amounts) {
+                    uint256 out = amounts[amounts.length - 1];
+                    if (out > bestOut) {
+                        bestOut = out;
+                        bestIndex = i;
+                    }
+                } catch {
+                    // leave bestOut/bestIndex unchanged for this router
                 }
-            } catch {
-                continue;
+            }
+            // Safe: bounded by block gas limit, can never realistically overflow.
+            unchecked {
+                ++i;
             }
         }
     }
 
     function supportedRouters(address[] calldata routers) external view returns (bool[] memory allowed) {
-        allowed = new bool[](routers.length);
-        for (uint256 i = 0; i < routers.length; i++) {
+        uint256 len = routers.length;
+        allowed = new bool[](len);
+        for (uint256 i = 0; i < len;) {
             allowed[i] = allowedRouters[routers[i]];
+            unchecked {
+                ++i;
+            }
         }
     }
 
     function supportedAssets(address[] calldata assets) external view returns (bool[] memory allowed) {
-        allowed = new bool[](assets.length);
-        for (uint256 i = 0; i < assets.length; i++) {
+        uint256 len = assets.length;
+        allowed = new bool[](len);
+        for (uint256 i = 0; i < len;) {
             allowed[i] = allowedAssets[assets[i]];
+            unchecked {
+                ++i;
+            }
         }
     }
 
     function _quoteCycle(SwapStep[] memory steps, uint256 amount) internal returns (uint256) {
         uint256 running = amount;
-        for (uint256 i = 0; i < steps.length; i++) {
+        uint256 len = steps.length; // cache: avoids re-reading array length each iteration
+        for (uint256 i = 0; i < len;) {
             running = _quoteSingleHop(steps[i], running);
             if (running == 0) revert InsufficientLiquidity();
+            // Safe: len is capped at MAX_STEPS (3), can never overflow.
+            unchecked {
+                ++i;
+            }
         }
         return running;
     }

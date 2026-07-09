@@ -1,0 +1,51 @@
+{
+  "_readme": "Dynamic multi-DEX, multi-asset, multi-hop route scanner config. Copy to routes.config.json. Addresses below are cross-checked BNB Chain mainnet addresses (see ../keeper/addresses.bsc.json for sources) - still verify on bscscan.com yourself before trusting them with real funds. wrappedNative must be whitelisted as an asset AND have a Chainlink price feed set on-chain (setPriceFeed) for gas-cost-in-asset accounting to work; same for every baseAsset you want gas-aware filtering on.",
+
+  "wrappedNative": { "symbol": "WBNB", "address": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", "decimals": 18 },
+
+  "baseAssets": [
+    { "symbol": "USDT", "address": "0x55d398326f99059fF775485246999027B3197955", "decimals": 18 },
+    { "symbol": "USDC", "address": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", "decimals": 18 },
+    { "symbol": "FDUSD", "address": "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409", "decimals": 18 },
+    { "symbol": "WBNB", "address": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", "decimals": 18 },
+    { "symbol": "BTCB", "address": "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c", "decimals": 18 },
+    { "symbol": "ETH", "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8", "decimals": 18 }
+  ],
+
+  "intermediateTokens": [
+    { "symbol": "USDT", "address": "0x55d398326f99059fF775485246999027B3197955", "decimals": 18 },
+    { "symbol": "USDC", "address": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d", "decimals": 18 },
+    { "symbol": "FDUSD", "address": "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409", "decimals": 18 },
+    { "symbol": "WBNB", "address": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", "decimals": 18 },
+    { "symbol": "BTCB", "address": "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c", "decimals": 18 },
+    { "symbol": "ETH", "address": "0x2170Ed0880ac9A755fd29B2688956BD959F933F8", "decimals": 18 }
+  ],
+
+  "routers": [
+    { "name": "PancakeSwapV2", "address": "0x10ED43C718714eb63d5aA57B78B54704E256024E", "routerType": 0 },
+    { "name": "Biswap", "address": "0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8", "routerType": 0 },
+    { "name": "ApeSwap", "address": "0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7", "routerType": 0 }
+  ],
+
+  "probeAmountByAssetAddress": {
+    "0x55d398326f99059fF775485246999027B3197955": "1000000000000000000000",
+    "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d": "1000000000000000000000",
+    "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409": "1000000000000000000000",
+    "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "2000000000000000000",
+    "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c": "20000000000000000",
+    "0x2170Ed0880ac9A755fd29B2688956BD959F933F8": "300000000000000000"
+  },
+
+  "gasUnitsPerTrade": 700000,
+  "slippageBufferBps": 30,
+  "executionSlippageBps": 50,
+
+  "minProfitByAssetAddress": {
+    "0x55d398326f99059fF775485246999027B3197955": "5000000000000000000",
+    "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d": "5000000000000000000",
+    "0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409": "5000000000000000000",
+    "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c": "10000000000000000",
+    "0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c": "100000000000000",
+    "0x2170Ed0880ac9A755fd29B2688956BD959F933F8": "2000000000000000"
+  }
+}

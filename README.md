@@ -113,15 +113,20 @@ flash-arb/
 ├── src/
 │   ├── AaveArbitrageExecutorV3.sol   # the executor contract
 │   └── mocks/                        # MockAavePool, MockERC20, MockRouterV2/V3, MockStableSwap
-├── test/AaveArbitrageExecutor.t.sol  # Foundry tests (see below)
+├── test/
+│   ├── AaveArbitrageExecutor.t.sol   # deterministic Foundry tests (mocks, no network needed)
+│   └── ForkBsc.t.sol                 # tests against REAL BNB Chain state (needs --fork-url)
 ├── script/
 │   ├── Deploy.s.sol                  # deploy against a REAL Aave pool (mainnet/testnet)
 │   └── DeployLocalDemo.s.sol         # deploy + run one full arbitrage against local mocks
 ├── keeper/                           # off-chain TypeScript bot (ethers.js)
-│   ├── src/index.ts                  # poll loop: quote → decide → execute
-│   ├── strategies.example.json       # route template using verified BSC addresses — see below
+│   ├── src/index.ts                  # poll loop: dynamic scan or static routes → decide → execute
+│   ├── src/routes.ts                 # multi-DEX, multi-hop route generator (dynamic mode)
+│   ├── routes.config.example.json    # dynamic-mode config: assets/routers/thresholds
+│   ├── strategies.example.json       # static-mode fixed route (SCAN_MODE=static)
 │   ├── addresses.bsc.json            # verified BSC contract/token addresses + sources
 │   └── .env.example
+├── ARBITRAGE-UPGRADE.md              # why the spread was negative + every change explained
 └── foundry.toml
 ```
 
@@ -243,9 +248,9 @@ harmlessly (loan never taken) rather than losing funds.
 
 ## Verified BSC addresses (`keeper/addresses.bsc.json`)
 
-`keeper/strategies.example.json` now ships a real triangular route (USDT → WBNB → USDC → USDT via
-PancakeSwap V2) using addresses cross-checked against BscScan and each protocol's own developer
-docs — not pulled from memory. See `keeper/addresses.bsc.json` for the full list and sources:
+Addresses cross-checked against BscScan and each protocol's own developer docs — not pulled from
+memory. See `keeper/addresses.bsc.json` and `keeper/routes.config.example.json` for the full list
+and sources:
 
 | Contract | Address |
 |---|---|
@@ -253,14 +258,33 @@ docs — not pulled from memory. See `keeper/addresses.bsc.json` for the full li
 | PancakeSwap V2 Router | `0x10ED43C718714eb63d5aA57B78B54704E256024E` |
 | PancakeSwap V3 Smart Router | `0x13f4EA83D0bd40E75C8222255bc855a974568Dd4` |
 | PancakeSwap V3 QuoterV2 | `0xB048Bbc1Ee6b733FFfCFb9e9CeF7375518e25997` |
+| Biswap Router | `0x3a6d8cA21D1CF76F653A67577FA0D27453350dD8` |
+| ApeSwap Router | `0xcF0feBd3f17CEf5b47b0cD257aCf6025c5BFf3b7` |
+| Chainlink BNB/USD feed | `0x0567F2323251f0Aab15c8dFb1967E4e8A7D42aeE` |
 | WBNB | `0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c` |
 | USDT (BSC-USD) | `0x55d398326f99059fF775485246999027B3197955` |
 | USDC | `0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d` |
+| FDUSD | `0xc5f0f7b66764F6ec8C8Dff7BA683102295E16409` |
+| BTCB | `0x7130d2A12B9BCbFAe4f2634d864A1Ee1Ce3Ead9c` |
+| ETH (Binance-Peg) | `0x2170Ed0880ac9A755fd29B2688956BD959F933F8` |
 
 Even so, for something that borrows and moves real money, **do your own final check on
 bscscan.com** before pointing real funds/keys at any of these — contracts can be upgraded behind
 proxies, and this list can go stale. Don't extend it with addresses from a random blog post or
-tutorial without the same cross-checking.
+tutorial without the same cross-checking. For any other Chainlink feed (e.g. per-asset USD feeds
+needed for `setPriceFeed()` beyond BNB/USD), look them up yourself at the Chainlink docs' price feed
+address list — not included here since I could only independently verify the BNB/USD one.
+
+## Multi-DEX, multi-asset, multi-hop scanning
+
+See **`ARBITRAGE-UPGRADE.md`** for a full writeup of why an earlier same-DEX example route returned
+a negative spread, and every change made to search across DEXs/assets/hops and account for flash-loan
+premium + swap fees + gas cost + slippage before ever submitting a transaction. Short version: the
+keeper bot (`keeper/src/routes.ts` + `keeper/src/index.ts`, `SCAN_MODE=dynamic`) now generates and
+prices candidate 2-hop and 3-hop routes across every configured base asset (USDT, USDC, FDUSD,
+WBNB, BTCB, ETH) and DEX (PancakeSwap V2/V3, Biswap, ApeSwap), picking the best-quoting router
+independently for each hop, and only submits a trade once net profit — after the flash-loan premium,
+swap fees, an on-chain gas-cost estimate, and a slippage buffer — clears a per-asset threshold.
 
 ## Security reminders
 

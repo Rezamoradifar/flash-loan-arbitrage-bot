@@ -222,4 +222,91 @@ contract AaveArbitrageExecutorTest is Test {
 
         assertGt(usdt.balanceOf(profitRecipient), profitBefore, "no profit from mixed V3+stable route");
     }
+
+    /// @notice Proves the multi-asset threshold bug fix: a per-asset
+    ///         threshold set high enough to exceed this cycle's real profit
+    ///         correctly blocks the trade, even though the global
+    ///         minProfitThreshold (0 by default) would have allowed it.
+    function test_RevertWhen_ProfitBelowPerAssetThreshold() public {
+        AaveArbitrageExecutorV3.SwapStep[] memory steps = _triangularSteps();
+
+        // The unconstrained cycle nets ~43,953e18 USDT profit (see the main
+        // profit test) - set a per-asset floor far above that.
+        vm.prank(owner);
+        executor.setMinProfitThresholdForAsset(address(usdt), 1_000_000e18);
+
+        vm.prank(keeperBot);
+        vm.expectRevert(AaveArbitrageExecutorV3.ArbProfitBelowThreshold.selector);
+        executor.executeArbitrage(address(usdt), 100_000e18, steps, 0, 0);
+    }
+
+    /// @notice A per-asset threshold set BELOW the global default still lets
+    ///         a genuinely profitable trade through - proving the override is
+    ///         two-directional (raises OR lowers the effective bar), not a
+    ///         one-way tightening.
+    function test_PerAssetThresholdOverridesGlobal_AllowsLowerBar() public {
+        vm.startPrank(owner);
+        executor.setMinProfitThreshold(1_000_000e18); // global: would block everything
+        executor.setMinProfitThresholdForAsset(address(usdt), 0); // 0 = explicit fallback to global...
+        vm.stopPrank();
+
+        // ...so first confirm the global-only path actually blocks it,
+        AaveArbitrageExecutorV3.SwapStep[] memory steps = _triangularSteps();
+        vm.prank(keeperBot);
+        vm.expectRevert(AaveArbitrageExecutorV3.ArbProfitBelowThreshold.selector);
+        executor.executeArbitrage(address(usdt), 100_000e18, steps, 0, 0);
+
+        // then set a real per-asset override low enough to allow it through.
+        vm.prank(owner);
+        executor.setMinProfitThresholdForAsset(address(usdt), 1e18);
+
+        vm.prank(keeperBot);
+        executor.executeArbitrage(address(usdt), 100_000e18, steps, 0, 0);
+        assertEq(executor.operationCount(), 1);
+    }
+
+    /// @notice Gas-cost-aware profit accounting: with real Chainlink-style
+    ///         feeds configured for WBNB and USDT, expectedNetProfitAfterGas
+    ///         correctly subtracts a real gas cost (converted from native wei
+    ///         into USDT terms) from the gross expected profit, and reports a
+    ///         genuinely negative number when gas cost exceeds profit -
+    ///         proving the bot can reject gas-unprofitable trades before
+    ///         ever sending a transaction.
+    function test_ExpectedNetProfitAfterGas_AccountsForRealGasCost() public {
+        MockERC20 wbnb = new MockERC20("Wrapped BNB", "WBNB", 18);
+        // $600/BNB and $1/USDT, both at Chainlink's usual 8 decimals.
+        MockChainlinkAggregator bnbFeed = new MockChainlinkAggregator(600e8, 8);
+        MockChainlinkAggregator usdtFeed = new MockChainlinkAggregator(1e8, 8);
+
+        vm.startPrank(owner);
+        executor.setPriceFeed(address(wbnb), address(bnbFeed));
+        executor.setPriceFeed(address(usdt), address(usdtFeed));
+        vm.stopPrank();
+
+        AaveArbitrageExecutorV3.SwapStep[] memory steps = _triangularSteps();
+        uint256 loanAmount = 100_000e18;
+
+        uint256 netProfit = executor.expectedNetProfit(address(usdt), loanAmount, steps);
+        assertGt(netProfit, 0, "sanity: cycle should be profitable before gas");
+
+        // Tiny gas cost: net-of-gas profit should still be (almost) the same and positive.
+        int256 afterTinyGas =
+            executor.expectedNetProfitAfterGas(address(usdt), loanAmount, steps, address(wbnb), 500_000, 1 gwei);
+        assertGt(afterTinyGas, 0, "should stay profitable after a realistic small gas cost");
+
+        // Absurd gas price: 500,000 gas * 300,000 gwei = 150 BNB ~= $90,000 - dwarfs the
+        // ~43,953 USDT profit, so net-of-gas must go negative.
+        int256 afterHugeGas =
+            executor.expectedNetProfitAfterGas(address(usdt), loanAmount, steps, address(wbnb), 500_000, 300_000 gwei);
+        assertLt(afterHugeGas, 0, "must go negative when gas cost swamps profit");
+    }
+
+    /// @notice estimateGasCostInAsset returns 0 (not a revert) when the
+    ///         required price feeds aren't configured - the documented signal
+    ///         for "unknown, use your own off-chain estimate" rather than
+    ///         silently treating gas as free.
+    function test_EstimateGasCostInAsset_ReturnsZeroWithoutFeeds() public view {
+        uint256 cost = executor.estimateGasCostInAsset(address(usdt), address(tokX), 500_000, 5 gwei);
+        assertEq(cost, 0);
+    }
 }
