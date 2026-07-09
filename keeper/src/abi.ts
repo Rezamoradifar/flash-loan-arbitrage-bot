@@ -1,0 +1,15 @@
+export const EXECUTOR_ABI = [
+  "function executeArbitrage(address asset, uint256 amount, (address router,address quoter,uint8 routerType,address tokenIn,address tokenOut,uint24 v3Fee,int128 stableI,int128 stableJ)[] steps, uint256 minProfit, uint16 slippageBPS)",
+  "function expectedNetProfit(address asset, uint256 amount, (address router,address quoter,uint8 routerType,address tokenIn,address tokenOut,uint24 v3Fee,int128 stableI,int128 stableJ)[] steps) returns (uint256 netProfit)",
+  "function previewSpread(address asset, uint256 amount, (address router,address quoter,uint8 routerType,address tokenIn,address tokenOut,uint24 v3Fee,int128 stableI,int128 stableJ)[] steps) returns (uint256 spreadBPS)",
+  "function estimateFlashLoanFee(uint256 amount) view returns (uint256)",
+  "function estimateGasCost() view returns (uint256)",
+  "function minSpreadBPS() view returns (uint16)",
+  "function minProfitThreshold() view returns (uint256)",
+  "function keeper() view returns (address)",
+  "function owner() view returns (address)",
+  "function allowedRouters(address) view returns (bool)",
+  "function allowedAssets(address) view returns (bool)",
+  "event FlashLoanStarted(address indexed asset, uint256 amount)",
+  "event ArbitrageExecuted(address indexed asset, uint256 amountBorrowed, uint256 grossProfit, uint256 protocolFee, uint256 netProfit)",
+] as const;

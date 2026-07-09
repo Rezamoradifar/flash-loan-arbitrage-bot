@@ -1,0 +1,49 @@
+{
+  "_readme": "Copy to strategies.json and fill in REAL, VERIFIED addresses. Every 0x0000... below is a placeholder - the bot will simply fail calls against it, which is intentional: never ship a real address here that you have not independently verified on BscScan / the protocol's own docs. routerType: 0 = Uniswap-V2-style, 1 = Uniswap-V3-style (quoter+router), 2 = Curve/Ellipsis-style stable pool.",
+
+  "asset": {
+    "symbol": "USDT",
+    "address": "0x0000000000000000000000000000000000dEaD",
+    "flashLoanAmount": "1000000000000000000000"
+  },
+
+  "strategies": [
+    {
+      "name": "triangular-usdt-tokx-toky",
+      "minProfitOverride": "0",
+      "slippageBpsOverride": 0,
+      "hops": [
+        {
+          "router": "0x0000000000000000000000000000000000dEaD",
+          "quoter": "0x0000000000000000000000000000000000dEaD",
+          "routerType": 0,
+          "tokenIn": "0x0000000000000000000000000000000000dEaD",
+          "tokenOut": "0x0000000000000000000000000000000000dEaD",
+          "v3Fee": 0,
+          "stableI": 0,
+          "stableJ": 0
+        },
+        {
+          "router": "0x0000000000000000000000000000000000dEaD",
+          "quoter": "0x0000000000000000000000000000000000dEaD",
+          "routerType": 0,
+          "tokenIn": "0x0000000000000000000000000000000000dEaD",
+          "tokenOut": "0x0000000000000000000000000000000000dEaD",
+          "v3Fee": 0,
+          "stableI": 0,
+          "stableJ": 0
+        },
+        {
+          "router": "0x0000000000000000000000000000000000dEaD",
+          "quoter": "0x0000000000000000000000000000000000dEaD",
+          "routerType": 0,
+          "tokenIn": "0x0000000000000000000000000000000000dEaD",
+          "tokenOut": "0x0000000000000000000000000000000000dEaD",
+          "v3Fee": 0,
+          "stableI": 0,
+          "stableJ": 0
+        }
+      ]
+    }
+  ]
+}

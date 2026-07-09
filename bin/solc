@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Wrapper around npm's solc-js (solcjs) so Foundry can use it as a drop-in
+# `solc` binary. Two quirks worked around here:
+#  1. solcjs sometimes prints a spurious ">>> Cannot retry compilation with
+#     SMT..." diagnostic line to stdout instead of stderr, corrupting the
+#     --standard-json output forge expects to parse.
+#  2. stdin is fully buffered to a temp file before invoking solcjs, so a
+#     large --standard-json payload can never trigger a broken-pipe write
+#     error on forge's side while node is still starting up.
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Unique per-invocation temp files: forge may run several solc invocations
+# concurrently, so fixed filenames here would let them corrupt each other.
+TMP_IN="$(mktemp)"
+TMP_OUT="$(mktemp)"
+trap 'rm -f "$TMP_IN" "$TMP_OUT"' EXIT
+cat > "$TMP_IN"
+
+# solcjs's CLI doesn't understand real solc's --allow-paths flag (or a few
+# other native-solc-only flags forge passes); strip anything it doesn't
+# support before invoking it.
+ARGS=()
+skip_next=0
+for arg in "$@"; do
+  if [ "$skip_next" = "1" ]; then
+    skip_next=0
+    continue
+  fi
+  case "$arg" in
+    --allow-paths)
+      skip_next=1
+      continue
+      ;;
+    --allow-paths=*)
+      continue
+      ;;
+  esac
+  ARGS+=("$arg")
+done
+
+set +e
+"$DIR/node_modules/.bin/solcjs" "${ARGS[@]}" < "$TMP_IN" > "$TMP_OUT" 2>/dev/null
+STATUS=$?
+set -e
+grep -v '^>>>' "$TMP_OUT"
+exit "$STATUS"
