@@ -48,9 +48,20 @@ async function runWithTrigger(provider: JsonRpcProvider, scanOnce: () => Promise
   }
 }
 
-async function submitOpportunity(executor: Contract, o: Opportunity) {
+/** DRY_RUN=true never touches `executor` here at all - it's purely a log
+ *  statement, which is exactly why DRY_RUN mode doesn't need a deployed
+ *  contract or a signer in the first place. The `!executor` guard below only
+ *  fires on the real-submission path, and only as a defensive backstop:
+ *  config.ts already refuses to start with DRY_RUN=false and no
+ *  EXECUTOR_ADDRESS/PRIVATE_KEY, so `executor` is guaranteed non-null here
+ *  whenever DRY_RUN is actually false. */
+async function submitOpportunity(executor: Contract | null, o: Opportunity) {
   if (config.dryRun) {
     console.log(`[${o.candidate.name}] DRY_RUN=true, not sending a transaction. Would submit net=${o.netProfit}.`);
+    return;
+  }
+  if (!executor) {
+    console.error(`[${o.candidate.name}] cannot submit: no executor contract configured.`);
     return;
   }
   try {
@@ -66,6 +77,13 @@ async function submitOpportunity(executor: Contract, o: Opportunity) {
 // ============================================================
 // Static mode: fixed, hand-authored routes from strategies.json
 // ============================================================
+//
+// Static mode always needs a real executor, dry-run or not: unlike dynamic
+// mode (which quotes DEXs directly over RPC via routes.ts), static mode's
+// whole profitability check IS the deployed contract's own
+// expectedNetProfit() - there's no local replica of that on-chain AMM-cycle
+// quoting logic to fall back to. runKeeper() below enforces this before
+// entering the loop.
 
 async function evaluateStaticStrategy(executor: Contract, asset: string, amount: bigint, strategy: StrategyConfig) {
   const steps = strategy.hops.map(hopTuple);
@@ -115,7 +133,7 @@ async function runStaticMode(executor: Contract, provider: JsonRpcProvider) {
 // Dynamic mode: scanner produces a ranked list, keeper executes the best one
 // ============================================================
 
-async function runDynamicMode(executor: Contract, provider: JsonRpcProvider) {
+async function runDynamicMode(executor: Contract | null, provider: JsonRpcProvider) {
   const cfg = loadRoutesConfig();
   console.log(
     `[dynamic] Scanning ${cfg.baseAssets.length} base asset(s) x ${cfg.intermediateTokens.length} token(s) x ${cfg.routers.length} router(s)`
@@ -141,8 +159,13 @@ async function runDynamicMode(executor: Contract, provider: JsonRpcProvider) {
   });
 }
 
-export async function runKeeper(executor: Contract, provider: JsonRpcProvider) {
+export async function runKeeper(executor: Contract | null, provider: JsonRpcProvider) {
   if (config.scanMode === "static") {
+    if (!executor) {
+      throw new Error(
+        "SCAN_MODE=static requires EXECUTOR_ADDRESS even with DRY_RUN=true - static mode's profitability check IS the deployed contract's own expectedNetProfit(), there's no local fallback for it. Set EXECUTOR_ADDRESS, or use SCAN_MODE=dynamic to simulate without a deployed contract."
+      );
+    }
     await runStaticMode(executor, provider);
   } else {
     await runDynamicMode(executor, provider);

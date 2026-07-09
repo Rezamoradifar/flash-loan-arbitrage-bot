@@ -236,20 +236,37 @@ executor.setMinProfitThreshold(...);
 
 ### Running the keeper bot
 
+**Simulate-only, minimal config** — `DRY_RUN=true` (the default) never signs or broadcasts anything,
+so it doesn't need `PRIVATE_KEY` or (in `SCAN_MODE=dynamic`, also the default) `EXECUTOR_ADDRESS`
+either — just an RPC endpoint:
+
 ```bash
 cd keeper
 npm install
-cp .env.example .env      # fill in RPC_URL, PRIVATE_KEY (keeper hot wallet), EXECUTOR_ADDRESS
-cp strategies.example.json strategies.json   # fill in REAL, VERIFIED addresses — see below
-npm run dry-run            # logs what it WOULD do, sends nothing — always start here
-npm start                  # live: sends real executeArbitrage() transactions when profitable
+echo "RPC_URL=<your BSC RPC>" > .env    # that's the whole .env for a dry-run dynamic scan
+cp routes.config.example.json routes.config.json
+npm run dry-run            # generates, prices, ranks, and logs real candidate routes; sends nothing
 ```
 
-The bot polls every `POLL_INTERVAL_MS`, calls the contract's own `expectedNetProfit()` (an
-`eth_call`, no gas cost) for each configured strategy, and only sends a real transaction when the
-quoted net profit clears your configured threshold. `executeArbitrage()` re-verifies profitability
-on-chain in the same transaction before borrowing, so a stale off-chain quote just reverts
-harmlessly (loan never taken) rather than losing funds.
+**Full setup, live execution:**
+
+```bash
+cp .env.example .env      # fill in RPC_URL, PRIVATE_KEY (keeper hot wallet), EXECUTOR_ADDRESS
+cp routes.config.example.json routes.config.json   # or strategies.example.json for SCAN_MODE=static
+npm run dry-run            # logs what it WOULD do, sends nothing — always confirm this first
+DRY_RUN=false npm start    # live: sends real executeArbitrage() transactions when profitable
+```
+
+(`SCAN_MODE=static` always requires `EXECUTOR_ADDRESS`, dry-run or not — that mode's profitability
+check *is* the deployed contract's own `expectedNetProfit()`, so there's no local replica of it to
+fall back on. `SCAN_MODE=dynamic` quotes DEXs directly over RPC and only needs the contract for the
+flash-loan premium/gas-cost helpers, which fall back to a local estimate when no contract is
+configured.)
+
+The bot only sends a real transaction once the ranked, cost-adjusted net profit clears your
+configured threshold. `executeArbitrage()` re-verifies profitability on-chain in the same
+transaction before borrowing, so a stale off-chain quote just reverts harmlessly (loan never taken)
+rather than losing funds.
 
 ## Verified BSC addresses (`keeper/addresses.bsc.json`)
 

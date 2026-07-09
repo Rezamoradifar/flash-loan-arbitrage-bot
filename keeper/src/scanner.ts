@@ -77,8 +77,16 @@ function logDecision(b: DecisionBreakdown) {
   }
 }
 
+/** Mirrors AaveArbitrageExecutorV3.estimateFlashLoanFee(): Aave V3's flash-loan
+ *  premium is a fixed, publicly-known 0.05% of the borrowed amount - it isn't
+ *  deployment-specific configuration, so it's safe to replicate locally when
+ *  no executor contract is available to ask (DRY_RUN=true, no EXECUTOR_ADDRESS). */
+function localFlashLoanFeeEstimate(amount: bigint): bigint {
+  return (amount * 5n) / 10_000n;
+}
+
 async function evaluateCandidate(
-  executor: Contract,
+  executor: Contract | null,
   provider: JsonRpcProvider,
   candidate: RouteCandidate,
   amount: bigint,
@@ -136,8 +144,10 @@ async function evaluateCandidate(
   const grossOutAfterBuffer = (candidate.grossOut * BigInt(10_000 - cfg.slippageBufferBps)) / 10_000n;
   breakdown.afterSlippageBuffer = grossOutAfterBuffer.toString();
 
-  // 2) Flash loan premium (cost #1).
-  const premium: bigint = await executor.estimateFlashLoanFee(amount);
+  // 2) Flash loan premium (cost #1). Falls back to a local replica of the
+  //    fixed 0.05% Aave V3 rate when there's no deployed contract to ask
+  //    (DRY_RUN=true, no EXECUTOR_ADDRESS) - see localFlashLoanFeeEstimate.
+  const premium: bigint = executor ? await executor.estimateFlashLoanFee(amount) : localFlashLoanFeeEstimate(amount);
   breakdown.premium = premium.toString();
   const afterPremium = grossOutAfterBuffer - amount - premium;
   breakdown.afterPremium = afterPremium.toString();
@@ -146,24 +156,29 @@ async function evaluateCandidate(
   }
 
   // 3) Gas cost (cost #3), converted to the borrowed asset's terms via the
-  //    contract's own Chainlink-fed helper. Requires setPriceFeed() to be
-  //    configured on-chain for both wrappedNative and this base asset; if
-  //    either is missing the helper returns 0 and gasCostKnown=false flags
-  //    that in the log instead of silently treating gas as free.
+  //    contract's own Chainlink-fed helper. Requires an actual deployed
+  //    contract AND setPriceFeed() configured on-chain for both
+  //    wrappedNative and this base asset; if any of that is missing (no
+  //    executor at all, or feeds not set) gasCostKnown=false flags that in
+  //    the log instead of silently treating gas as free.
   const feeData = await provider.getFeeData();
   const gasPriceWei = feeData.gasPrice ?? 0n;
   let gasCostInAsset = 0n;
   let gasCostKnown = true;
-  try {
-    gasCostInAsset = await executor.estimateGasCostInAsset(
-      candidate.baseAsset.address,
-      cfg.wrappedNative.address,
-      cfg.gasUnitsPerTrade,
-      gasPriceWei
-    );
-    gasCostKnown = gasCostInAsset > 0n;
-  } catch {
-    gasCostKnown = false;
+  if (!executor) {
+    gasCostKnown = false; // no deployed contract/price feeds to query - simulate-only mode
+  } else {
+    try {
+      gasCostInAsset = await executor.estimateGasCostInAsset(
+        candidate.baseAsset.address,
+        cfg.wrappedNative.address,
+        cfg.gasUnitsPerTrade,
+        gasPriceWei
+      );
+      gasCostKnown = gasCostInAsset > 0n;
+    } catch {
+      gasCostKnown = false;
+    }
   }
 
   const netProfit = afterPremium - gasCostInAsset;
@@ -214,7 +229,7 @@ async function evaluateCandidate(
  * decides what to do with the ranked list.
  */
 export async function runScanCycle(
-  executor: Contract,
+  executor: Contract | null,
   provider: JsonRpcProvider,
   cfg: RoutesConfigFile,
   probes: Record<string, bigint>,

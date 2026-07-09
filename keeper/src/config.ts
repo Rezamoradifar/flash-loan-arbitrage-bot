@@ -31,6 +31,20 @@ function requireEnv(name: string): string {
   return v;
 }
 
+/** DRY_RUN is read directly (not via `config`, which doesn't exist yet while
+ *  we're building it) so PRIVATE_KEY/EXECUTOR_ADDRESS can be conditionally
+ *  required below - a pure simulate-and-log run needs neither: it never
+ *  signs or broadcasts anything. */
+const dryRun = (process.env.DRY_RUN ?? "true").toLowerCase() !== "false";
+
+function requireEnvUnlessDryRun(name: string): string | undefined {
+  const v = process.env[name];
+  if (!v && !dryRun) {
+    throw new Error(`Missing required env var ${name} (required when DRY_RUN=false; see .env.example)`);
+  }
+  return v;
+}
+
 export interface RoutesConfigFile {
   wrappedNative: TokenInfo;
   baseAssets: TokenInfo[];
@@ -55,8 +69,13 @@ export interface RoutesConfigFile {
 
 export const config = {
   rpcUrl: requireEnv("RPC_URL"),
-  privateKey: requireEnv("PRIVATE_KEY"),
-  executorAddress: requireEnv("EXECUTOR_ADDRESS"),
+  // Both optional when DRY_RUN=true: a pure simulate-and-log run needs a
+  // read-only provider connection but never signs or broadcasts anything, so
+  // it needs neither a real wallet nor a deployed contract. Required (and
+  // validated above) the moment DRY_RUN=false, since that path really does
+  // sign and submit executeArbitrage() transactions.
+  privateKey: requireEnvUnlessDryRun("PRIVATE_KEY"),
+  executorAddress: requireEnvUnlessDryRun("EXECUTOR_ADDRESS"),
   // "dynamic" = multi-DEX/multi-asset/multi-hop auto-scanner (routes.config.json).
   // "static" = fixed hand-authored routes (strategies.json), for a known-good route.
   scanMode: (process.env.SCAN_MODE ?? "dynamic").toLowerCase(),
@@ -69,7 +88,7 @@ export const config = {
   strategiesFile: process.env.STRATEGIES_FILE ?? "./strategies.json",
   routesConfigFile: process.env.ROUTES_CONFIG_FILE ?? "./routes.config.json",
   pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 6000),
-  dryRun: (process.env.DRY_RUN ?? "true").toLowerCase() !== "false",
+  dryRun,
   minNetProfit: BigInt(process.env.MIN_NET_PROFIT ?? "0"),
   slippageBps: Number(process.env.SLIPPAGE_BPS ?? 0),
 };
