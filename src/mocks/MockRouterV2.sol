@@ -23,6 +23,18 @@ contract MockRouterV2 {
         feeBPS = _feeBPS;
     }
 
+    /// @notice Adds test liquidity to this pool after deployment (pulls both
+    ///         tokens from the caller via transferFrom - approve first).
+    ///         Lets a test script/flow top up a pool without redeploying it,
+    ///         mirroring a real router's addLiquidity step closely enough
+    ///         for local arbitrage testing.
+    function addLiquidity(uint256 amountA, uint256 amountB) external {
+        IERC20(tokenA).transferFrom(msg.sender, address(this), amountA);
+        IERC20(tokenB).transferFrom(msg.sender, address(this), amountB);
+        reserveA += amountA;
+        reserveB += amountB;
+    }
+
     function _reservesFor(address tokenIn, address tokenOut) internal view returns (uint256 rIn, uint256 rOut, bool inIsA) {
         if (tokenIn == tokenA && tokenOut == tokenB) {
             return (reserveA, reserveB, true);
